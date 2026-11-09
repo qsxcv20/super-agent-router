@@ -21,7 +21,7 @@ const ok = (label, cond, extra = '') => {
 function run(script, payload) {
   const r = spawnSync('node', [path.join(PLUGIN_ROOT, 'scripts', script)], {
     input: JSON.stringify(payload),
-    env: { ...process.env, PLUGIN_ROOT, PLUGIN_DATA: DATA },
+    env: { ...process.env, PLUGIN_ROOT, PLUGIN_DATA: DATA, MINIMAX_PROJECT_DIR: payload && payload.cwd ? payload.cwd : tmp },
     encoding: 'utf8'
   });
   return { out: (r.stdout || '').trim(), err: (r.stderr || '').trim(), code: r.status };
@@ -69,7 +69,10 @@ const scopeSession = 'e-task';
   ok('空交付 block', a.out.includes('block'));
   const b = run('watchdog.mjs', { hook_event_name: 'SubagentStop', agent_id: 'a1', agent_type: 'worker', last_assistant_message: '已经完成修复了' });
   ok('无证据声称完成 block', b.out.includes('block'));
-  const c = run('watchdog.mjs', { hook_event_name: 'SubagentStop', agent_id: 'a1', agent_type: 'worker', last_assistant_message: '已修复。改动文件 src/app.ts，测试命令 npm test 全部通过' });
+  // watchdog 现在会校验声称的文件是否真的存在，先把文件造出来
+  fs.mkdirSync(path.join(tmp, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'src', 'app.ts'), 'export const a = 1;', 'utf8');
+  const c = run('watchdog.mjs', { hook_event_name: 'SubagentStop', agent_id: 'a1', agent_type: 'worker', last_assistant_message: '已修复。改动文件 src/app.ts，测试命令 npm test 全部通过', cwd: tmp });
   ok('有证据放行', c.out === '');
 }
 

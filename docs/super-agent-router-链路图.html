@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Super-agent Router · 触发链路与完整性评估</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+:root{
+  --bg:#f7f5f0; --card:#ffffff; --line:#e9e3d6; --line-soft:#f0ece3;
+  --text:#14171e; --muted:#7c7a72; --body:#3a4256;
+  --primary:#2f6f5e; --accent:#c97b3f; --danger:#b06367; --ok:#2f6f5e;
+  --ok-bg:rgba(47,111,94,.08); --accent-bg:rgba(201,123,63,.09); --danger-bg:rgba(176,99,103,.09);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--text);
+  font-family:'Outfit',sans-serif; font-size:14.5px; line-height:1.62;
+  -webkit-font-smoothing:antialiased;
+}
+body::before{
+  content:""; position:fixed; inset:0; pointer-events:none; z-index:0;
+  background:
+    radial-gradient(circle at 8% 4%, rgba(47,111,94,.05), transparent 42%),
+    radial-gradient(circle at 94% 92%, rgba(201,123,63,.05), transparent 42%);
+}
+.wrap{position:relative; z-index:1; max-width:1120px; margin:0 auto; padding:0 24px 80px}
+@media(min-width:768px){.wrap{padding:0 40px 96px}}
+
+header{padding:52px 0 34px; border-bottom:1px solid var(--line)}
+.eyebrow{
+  font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.16em;
+  text-transform:uppercase; color:var(--primary); font-weight:500;
+}
+h1{
+  font-family:'DM Serif Display',serif; font-weight:400; font-size:34px;
+  letter-spacing:-.005em; line-height:1.2; margin:12px 0 0;
+}
+.lede{color:var(--body); font-size:15px; max-width:70ch; margin-top:14px}
+
+.verdict{
+  margin-top:26px; background:var(--card); border:1px solid var(--line);
+  border-radius:2xl; padding:20px 22px; display:grid;
+  grid-template-columns:auto 1fr; gap:18px; align-items:start;
+  box-shadow:0 4px 16px -2px rgba(0,0,0,.06);
+}
+@media(max-width:640px){.verdict{grid-template-columns:1fr}}
+.badge{
+  font-family:'JetBrains Mono',monospace; font-size:11px; font-weight:500;
+  padding:5px 10px; border-radius:8px; background:var(--ok-bg);
+  color:var(--primary); white-space:nowrap; letter-spacing:.04em;
+}
+.badge.warn{background:var(--accent-bg); color:var(--accent)}
+.badge.bad{background:var(--danger-bg); color:var(--danger)}
+.verdict h2{font-size:15px; font-weight:600; margin-bottom:6px}
+.verdict p{color:var(--body); font-size:14px}
+
+section{padding-top:46px}
+h2.sec{
+  font-family:'DM Serif Display',serif; font-weight:400; font-size:25px;
+  letter-spacing:-.004em; display:flex; align-items:center; gap:10px;
+}
+h2.sec svg{width:20px;height:20px;color:var(--primary);flex:none}
+.sub{color:var(--muted); font-size:13.5px; margin-top:7px; max-width:74ch}
+
+.diagram{
+  background:var(--card); border:1px solid var(--line); border-radius:2xl;
+  padding:26px 22px; margin-top:20px; overflow-x:auto;
+  box-shadow:0 2px 8px rgba(0,0,0,.04);
+}
+.diagram .mermaid{min-width:660px}
+
+.grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-top:20px}
+@media(max-width:820px){.grid2{grid-template-columns:1fr}}
+.card{
+  background:var(--card); border:1px solid var(--line); border-radius:2xl;
+  padding:18px 20px; box-shadow:0 2px 8px rgba(0,0,0,.04);
+  transition:transform .2s ease, box-shadow .2s ease;
+}
+.card:hover{transform:translateY(-2px); box-shadow:0 8px 24px -6px rgba(0,0,0,.10)}
+.card h3{
+  font-size:13px; font-weight:600; display:flex; align-items:center;
+  gap:8px; margin-bottom:10px; letter-spacing:.01em;
+}
+.card h3 svg{width:15px;height:15px;flex:none}
+.card p{color:var(--body); font-size:13.5px; margin-bottom:8px}
+.card p:last-child{margin-bottom:0}
+.mono{font-family:'JetBrains Mono',monospace;font-size:12px}
+
+table{width:100%;border-collapse:collapse;margin-top:18px;font-size:13.5px}
+thead th{
+  text-align:left; padding:10px 12px; font-size:11px; font-weight:600;
+  letter-spacing:.08em; text-transform:uppercase; color:var(--muted);
+  border-bottom:1px solid var(--line);
+}
+tbody td{padding:12px; border-bottom:1px solid var(--line-soft); vertical-align:top; color:var(--body)}
+tbody tr:last-child td{border-bottom:none}
+tbody td:first-child{font-weight:600; color:var(--text); white-space:nowrap}
+.tag{
+  display:inline-block; font-family:'JetBrains Mono',monospace; font-size:10.5px;
+  padding:2px 7px; border-radius:6px; letter-spacing:.03em;
+}
+.tag.fixed{background:var(--ok-bg); color:var(--primary)}
+.tag.gap{background:var(--danger-bg); color:var(--danger)}
+.tag.soft{background:var(--accent-bg); color:var(--accent)}
+
+.loop{
+  margin-top:20px; background:var(--card); border:1px solid var(--line);
+  border-radius:2xl; padding:24px 22px; box-shadow:0 2px 8px rgba(0,0,0,.04);
+}
+.loop-row{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;gap:12px;align-items:center}
+@media(max-width:900px){.loop-row{grid-template-columns:1fr}}
+.loop-node{
+  background:var(--ok-bg); border:1px solid rgba(47,111,94,.22);
+  border-radius:14px; padding:14px 16px; text-align:center;
+}
+.loop-node b{display:block;font-size:13px;margin-bottom:4px}
+.loop-node span{font-size:12px;color:var(--body)}
+.loop-arrow{color:var(--primary);display:flex;align-items:center;justify-content:center}
+.loop-arrow svg{width:20px;height:20px}
+@media(max-width:900px){.loop-arrow{transform:rotate(90deg)}}
+.loop-cap{
+  margin-top:16px;padding-top:14px;border-top:1px dashed var(--line);
+  font-size:13px;color:var(--body);text-align:center;
+}
+
+.stack{display:flex;flex-direction:column;gap:10px;margin-top:18px}
+.stack-item{
+  display:grid;grid-template-columns:34px 1fr;gap:14px;align-items:start;
+  background:var(--card); border:1px solid var(--line); border-radius:14px;
+  padding:14px 16px; box-shadow:0 2px 8px rgba(0,0,0,.04);
+}
+.stack-num{
+  width:30px;height:30px;border-radius:9px;background:var(--ok-bg);
+  color:var(--primary);display:flex;align-items:center;justify-content:center;
+  font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:500;
+}
+.stack-item b{font-size:13.5px;display:block;margin-bottom:3px}
+.stack-item p{font-size:13px;color:var(--body)}
+footer{
+  margin-top:56px;padding-top:22px;border-top:1px solid var(--line);
+  color:var(--muted);font-size:12.5px;
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">super-agent-router · v0.3.2</div>
+  <h1>触发链路图与完整性评估</h1>
+  <p class="lede">这套系统把「会话」当系统运行：五个 Hook 事件构成触发骨架，两条闭环构成进化骨架。下面是完整链路，以及我在真实环境探测后发现的六个漏洞 —— 其中四个已修，两个是设计层面的软肋。</p>
+
+  <div class="verdict">
+    <span class="badge warn">评估结论</span>
+    <div>
+      <h2>触发层已经可靠，闭环层还有一处硬缺口</h2>
+      <p>五个 Hook 全部实测生效（2026-11-09 端到端验证）。授权模型、越界拦截、失败沉淀、成功沉淀四条主链路闭合。<strong>但「无 SCOPE 派工放行」「连续派工覆盖前一条」「watchdog 只做字面匹配」这三个真实漏洞已修复</strong>；仍存两处软肋：组队 scope 重叠与单会话派工数上限只写在文档里，没有代码强制。</p>
+    </div>
+  </div>
+</header>
+
+<section>
+  <h2 class="sec">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.9 4.9l2.9 2.9M16.2 16.2l2.9 2.9M2 12h4M18 12h4M4.9 19.1l2.9-2.9M16.2 7.8l2.9-2.9"/></svg>
+    主链路：五个 Hook 事件
+  </h2>
+  <p class="sub">全部为同步 command handler，事件与输出形状严格遵循官方 MiniMax Hook 契约。<code class="mono">UserPromptSubmit</code> 与 <code class="mono">SubagentStop</code> 的 matcher 必须<b>省略</b>（不能写空串），这是上一版失效的直接原因。</p>
+
+  <div class="diagram">
+    <div class="mermaid">
+flowchart TD
+    START(["会话激活 · SessionStart"]) --> SSOUT
+
+    SSOUT["session-start.mjs<br/>注入编排协议：什么时候该编排 + 怎么开始"]
+    SSOUT --> PROMPT(["用户提交 Prompt"])
+
+    subgraph TRIG["触发层 · 五个 Hook 事件"]
+      UPS["UserPromptSubmit<br/>gate.mjs"]
+      PRE["PreToolUse<br/>dispatch.mjs / guard.mjs"]
+      SAS["SubagentStop<br/>watchdog.mjs"]
+    end
+
+    PROMPT --> UPS
+    UPS --> GATE{"命中编排意图?"}
+    GATE -->|"否 · 普通提问"| QUIET["静默放行<br/>零干扰"]
+    GATE -->|"是"| ROUTE["注入路由指令<br/>读 roster → 按 owns 匹配"]
+
+    ROUTE --> TEAM["组队<br/>scope 不重叠 + 职责正交"]
+    TEAM --> PRE
+    PRE --> DISP["派工登记<br/>scope 白名单校验"]
+    DISP -->|"缺 SCOPE"| DENY1["拒绝派工"]
+    DISP -->|"通过"| LESSON["注入历史教训<br/>PRIOR_LESSONS"]
+    LESSON --> REC["注入实战记录<br/>PRIOR_RECORDS"]
+    REC --> WORKER["Worker 执行"]
+
+    WORKER --> GUARD["PreToolUse 写 / 读 / 危险<br/>guard.mjs 三档判定"]
+    GUARD -->|"越界"| DENY2["deny"]
+    GUARD -->|"放行"| TOOL["工具执行"]
+
+    WORKER --> SAS
+    SAS --> WD{"交付有证据<br/>且文件真实存在?"}
+    WD -->|"否"| BLOCK["block 要求补证据"]
+    WD -->|"是"| VERIFY["独立 verifier 验收"]
+
+    VERIFY --> PASS{"验收通过?"}
+    PASS -->|"否"| RETRY["收窄 brief 重派"]
+    RETRY --> PRE
+    PASS -->|"是"| RECORD["记一条实战记录<br/>record-gate.mjs"]
+    RECORD --> DONE(["交付用户"])
+
+    classDef trigNode fill:#eef4f1,stroke:#2f6f5e,stroke-width:1.5px,color:#14171e
+    classDef outNode fill:#fdf6ef,stroke:#c97b3f,stroke-width:1.5px,color:#14171e
+    classDef stopNode fill:#f7ecee,stroke:#b06367,stroke-width:1.5px,color:#14171e
+    class UPS,PRE,SAS trigNode
+    class SSOUT,ROUTE,TEAM,DISP,LESSON,REC outNode
+    class DENY1,DENY2,BLOCK,RETRY stopNode
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2 class="sec">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+    两条闭环：失败记错题本，成功记履历
+  </h2>
+  <p class="sub">两者严格镜像，只记不读等于没进化。共同前提是「执行者不可自证」—— 由 <code class="mono">record-gate.mjs</code> 在代码层强制，验收人不得等于执行人。</p>
+
+  <div class="grid2">
+    <div class="card">
+      <h3>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v10M12 12l4 4"/><circle cx="12" cy="12" r="10"/></svg>
+        失败侧 · 错题本
+      </h3>
+      <p><span class="tag soft">复盘归因时触发</span></p>
+      <p>仅四类重大错误准入：越界 / 数据错误 / 交付缺失 / 不可逆。归因甩锅给 Router 则拒；缺「下次怎么办」或写成感想则拒；每成员上限 15 条。</p>
+      <p class="mono" style="color:var(--muted)">lessons-gate.mjs → .superagent/lessons/&lt;成员&gt;.md</p>
+      <p>派工时只注入「规则」段 → brief 的 <code class="mono">PRIOR_LESSONS</code>。下次派工前置，Worker 开工前就知道上次栽在哪。</p>
+    </div>
+
+    <div class="card">
+      <h3>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4-6.2-4.6-6.2 4.6 2.4-7.4L2 9.4h7.6z"/></svg>
+        成功侧 · 实战记录
+      </h3>
+      <p><span class="tag fixed">验收通过后触发</span></p>
+      <p>只有 verifier 验收通过的产出才计入。缺做法 / 缺证据 / 缺领域则拒；<strong>验收人不得等于执行人</strong>；上限 20 条，超限要求先合并淘汰。</p>
+      <p class="mono" style="color:var(--muted)">record-gate.mjs → .superagent/methods/&lt;成员&gt;.md「实战记录」段</p>
+      <p>写在方法论文件里而非另开目录：Worker 读方法论时自然看到，方法论删了履历一起没，不留孤儿数据。</p>
+    </div>
+  </div>
+
+  <div class="loop">
+    <div class="loop-row">
+      <div class="loop-node">
+        <b>失败</b>
+        <span>复盘归因 → 写错题本</span>
+      </div>
+      <div class="loop-arrow">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </div>
+      <div class="loop-node">
+        <b>前置</b>
+        <span>派工时注入规则段</span>
+      </div>
+      <div class="loop-arrow">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </div>
+      <div class="loop-node">
+        <b>下次不再栽</b>
+        <span>Worker 开工前已知</span>
+      </div>
+    </div>
+    <div class="loop-cap">成功侧同构：验收通过 → 写实战记录 → 匹配阶段注入 Router 参考 → 下次派得更准。<strong>但履历只影响「选谁」，绝不自动改写 owns 归属声明</strong> —— 归属是人工可审计的资产。</div>
+  </div>
+</section>
+
+<section>
+  <h2 class="sec">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01"/><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
+    探测发现的六个漏洞
+  </h2>
+  <p class="sub">不是读文档猜的，是按运行时真实环境喂 JSON 实测出来的。四个已修并加了回归测试锁定，两个属设计层软肋。</p>
+
+  <table>
+    <thead>
+      <tr><th>漏洞</th><th>探测方式</th><th>后果</th><th>状态</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>派工不写 SCOPE 时静默放行</td>
+        <td class="mono">dispatch → guard 越界写</td>
+        <td>无白名单 = 无边界，整个授权模型被绕开</td>
+        <td><span class="tag fixed">已修</span> 派工缺 SCOPE 直接 deny</td>
+      </tr>
+      <tr>
+        <td>连续派工覆盖前一条记录</td>
+        <td class="mono">同 session 派 2 次读台账</td>
+        <td>前一个 worker 的 scope 丢失，guard 拿后一个的判</td>
+        <td><span class="tag fixed">已修</span> 去重键改为 session+turn+agent</td>
+      </tr>
+      <tr>
+        <td>watchdog 被「搞定了」蒙混过关</td>
+        <td class="mono">SubagentStop 假消息</td>
+        <td>空交付守门人形同虚设</td>
+        <td><span class="tag fixed">已修</span> 扩充声明词 + 强制证据</td>
+      </tr>
+      <tr>
+        <td>watchdog 不验证文件是否存在</td>
+        <td class="mono">声称 src/ghost-file.ts</td>
+        <td>编造产出也能通过验收</td>
+        <td><span class="tag fixed">已修</span> 逐个路径落盘校验</td>
+      </tr>
+      <tr>
+        <td>组队 scope 重叠无人检测</td>
+        <td class="mono">两个 worker 同写 src/app.ts</td>
+        <td>并行写同一文件 → 冲突归因不清</td>
+        <td><span class="tag gap">未修</span> 仅文档约束，建议加派工时校验</td>
+      </tr>
+      <tr>
+        <td>单会话派工数无上限</td>
+        <td class="mono">同 session 连派 5 个</td>
+        <td>可能拉起过多成员，违背「默认 0 成员」</td>
+        <td><span class="tag gap">未修</span> roster 上限 12 会兜底，但不精准</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2 class="sec">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></svg>
+    完整性评估
+  </h2>
+  <p class="sub">逐层打分 —— 已完备的标绿，缺环的标黄，缺失的标红。</p>
+
+  <div class="stack">
+    <div class="stack-item">
+      <div class="stack-num">1</div>
+      <div>
+        <b>触发层 —— 完备</b>
+        <p>五个事件覆盖了会话全生命周期：激活、提问、派工、工具执行、子代理收尾。实测五步链路全部正确触发，且普通提问零干扰。</p>
+      </div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-num">2</div>
+      <div>
+        <b>授权层 —— 完备（修复后）</b>
+        <p>写严格 / 读宽松 / 危险一律拦三档成立，绝对路径与相对 scope 都能命中，只约束派工产生的 worker 不误伤主会话。</p>
+      </div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-num">3</div>
+      <div>
+        <b>验收层 —— 基本完备</b>
+        <p>程序层（Hook 查证据与文件真实性）与模型层（verifier 独立复核）双层分工正确。软肋在 watchdog 仍是关键词启发式，无法判断「证据是否切题」。</p>
+      </div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-num">4</div>
+      <div>
+        <b>闭环层 —— 完备</b>
+        <p>失败侧与成功侧都有完整闭环：写入 → 准入校验 → 下次注入 → 改变行为。两个方向都满足「只记不读等于白记」。</p>
+      </div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-num">5</div>
+      <div>
+        <b>组队层 —— 有缺口</b>
+        <p>scope 重叠与派工数量只靠 SKILL.md 约束，代码层没有强制。这是当前最实在的缺口：模型违反规则时，程序层不会拦住。</p>
+      </div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-num">6</div>
+      <div>
+        <b>治理层 —— 缺失</b>
+        <p>没有周期体检。成员职责漂移、零调用僵尸成员、能力重叠，靠人工发现。roster 有上限 12 作为粗糙兜底，但缺少主动收缩机制。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  生成于 2026-11-09 · super-agent-router v0.3.2 · 八套回归全绿<br>
+  链路图依据 MCode 官方 Hook 契约（local-plugin-hooks.md）与本机运行时实测数据绘制
+</footer>
+
+</div>
+
+<script>
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'base',
+  themeVariables: {
+    fontFamily: "'Outfit', sans-serif",
+    fontSize: '13px',
+    primaryColor: '#eef4f1',
+    primaryBorderColor: '#2f6f5e',
+    primaryTextColor: '#14171e',
+    lineColor: '#7c7a72',
+    clusterBkg: '#fbfaf7',
+    clusterBorder: '#e9e3d6'
+  },
+  flowchart: { curve: 'basis', nodeSpacing: 28, rankSpacing: 38, padding: 12 }
+});
+</script>
+</body>
+</html>
