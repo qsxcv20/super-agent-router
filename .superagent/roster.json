@@ -29,6 +29,17 @@
       "accepts": "需要独立确认产出是否符合验收标准",
       "reject": "不亲手改、不接受看起来没问题",
       "method": null
+    },
+    {
+      "name": "sa-plugin-release",
+      "kind": "specialist",
+      "owns": "插件包版本发布：版本号与描述同步、CHANGELOG 与面向使用者的 README 产出、包内自洽性校验",
+      "accepts": "插件有改动需要升版，或发布说明与实际改动脱节、包内引用疑似悬空",
+      "reject": "不改 Hook 判定逻辑本身，不做业务代码改动，不执行 GitHub 推送等对外可见动作",
+      "method": ".superagent/methods/sa-plugin-release.md",
+      "source": "runtime",
+      "created_for": "把插件包升到 v0.4.0 并补齐发布说明",
+      "created_at": "2026-11-09T12:48:07.216Z"
     }
   ]
 }

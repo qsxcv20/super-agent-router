@@ -9,7 +9,36 @@
 |---|---|---|
 | **写** | `write` `edit` `multiedit` `notebookedit` `bash` | **严格**：必须精确落在白名单内 |
 | **读** | `read` `glob` `grep` `list` `search` | **宽松**：允许读 scope 所在目录树 |
-| **危险** | `mavis_agent_delete` `mavis_agent_update` `website_deploy` `miniapp` | **一律拦**，不论有没有 scope |
+| **危险** | `mavis_agent_delete` `mavis_agent_update` `website_deploy` `miniapp` / `miniapp_publish` | **一律拦**，不论有没有 scope |
+
+## 只约束子代理（v0.4.0 起）
+
+派工发生在**父会话**（Router 发起），工具执行发生在**子会话**（worker 执行）。
+插件的判定基准是工具调用载荷里有没有 `agent_type` 字段：
+
+- **有** → 子代理会话 → 按 scope 严格判定
+- **没有** → Router 父会话 → 直接放行
+
+这条分水岭是必须的：Router 要汇总产出、跑验收、做复盘，
+它必须能读写 worker scope 之外的文件。早期版本用同一个 session_id 索引
+父与子两层，结果 worker 查不到自己的 scope（管控对真正要约束的人失效），
+Router 反而命中（被自己派出的 worker 锁死）。
+
+worker 的 scope 来自**它自己 transcript 里的派工原文** —— 那是 Router 亲手写下的
+白名单，是唯一权威来源，不需要任何 id 猜测或时序启发式。
+
+## 组队闸门（v0.4.0 起）
+
+两道闸门在**派工时**就拦，不等到 worker 动手：
+
+| 闸门 | 判什么 | 触发后果 |
+|---|---|---|
+| **scope 重叠** | 新 SCOPE 与本会话仍在飞的派工是否有写冲突 | 拒绝派发，报出冲突路径 |
+| **派工数上限** | 并发在飞 > 6 或单会话累计 > 30 | 拒绝派发 |
+
+- 只算**写冲突**（条目相同，或一方是另一方的目录前缀）。读范围天然重叠，不算冲突。
+- worker 结束后（`SubagentStop`）它的名额会被回收，所以「派完 → 验收 → 再派」不会误报。
+- 超过 2 小时没回收到结束信号的视为失联，不再计入在飞。
 
 ## 写：严格
 

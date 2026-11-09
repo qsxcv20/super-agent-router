@@ -8,7 +8,7 @@ const input = parseInput(readStdin());
 const prompt = String(input.prompt || '');
 
 // 粗筛特征：编排意图词 + 显式请求信号
-const INTENT = /(派工|组队|组建|拆成|分工|并行|安排人|交给谁|谁来做|编排|路由|多.?agent|团队|专项|验收|复盘|错题本)/i;
+const INTENT = /(派工|组队|组建|拆成|拆给|分工|并行|安排人|交给谁|谁来做|编排|路由|多.?agent|团队|专项|验收|复盘|错题本)/i;
 const SIGNAL = /(并行|同时|多个|分别|各自|多线程|批量)/i;
 const SCOPE_HINT = /SCOPE\s*[:：]/i;
 
