@@ -101,6 +101,18 @@ for (const rel of files) {
 }
 console.log('blob 上传: ' + entries.length);
 
+// 3.5 清理远端孤儿：本地已删且从未被 git 跟踪的文件，git ls-files 看不见，
+//     base_tree 也不会自动删，必须显式传 sha:null 才会真删。
+const localSet = new Set(files);
+const remoteTree = api('/repos/' + OWNER + '/' + REPO_NAME + '/git/trees/' + baseTree + '?recursive=1', 'GET', null);
+const orphans = (remoteTree.json && remoteTree.json.tree ? remoteTree.json.tree : [])
+  .filter(function (e) { return e.type === 'blob' && !localSet.has(e.path); })
+  .map(function (e) { return { path: e.path, mode: '100644', type: 'blob', sha: null }; });
+if (orphans.length) {
+  console.log('清理远端孤儿: ' + orphans.length + ' 个 -> ' + orphans.map(function (o) { return o.path; }).join(', '));
+}
+for (const o of orphans) entries.push(o);
+
 // 4. tree + commit + ref
 const tr = api('/repos/' + OWNER + '/' + REPO_NAME + '/git/trees', 'POST', { base_tree: baseTree, tree: entries });
 if (tr.status !== 201) { console.error('tree 失败: ' + (tr.json && tr.json.message)); process.exit(1); }
