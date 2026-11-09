@@ -1,6 +1,6 @@
 # super-agent-router 当前状态
 
-更新：2026-11-09 19:40　版本：v0.3.0
+更新：2026-11-09 20:30　版本：v0.3.2
 
 ## 状态：可以拿去正式任务上试了
 
@@ -11,6 +11,23 @@ v0.3.1 修复：按官方 Hook 契约修正，SessionStart 事件补齐 ——
 会话一开始就注入编排协议，模型自动知道该派工。详见下方「v0.3.1 修了什么」。
 
 v0.3.0 新增：实战记录（履历）机制。错题本记失败，履历记成功，两端闭环。
+
+## v0.3.2 修了什么（实测探测出的链路漏洞）
+
+不是读文档猜的，是按运行时真实环境喂 JSON 实测出来的：
+
+| 漏洞 | 探测方式 | 后果 | 修法 |
+|---|---|---|---|
+| 派工不写 SCOPE 静默放行 | dispatch → guard 越界写 | 无白名单=无边界，授权模型被绕开 | dispatch 直接 deny |
+| 连续派工覆盖前一条 | 同 session 派 2 次读台账 | 前 worker 的 scope 丢失 | 去重键改 session+turn+agent |
+| watchdog 被「搞定了」蒙混过关 | SubagentStop 假消息 | 空交付守门人失效 | 扩充声明词 + 强制证据 |
+| watchdog 不验证文件存在 | 声称 src/ghost-file.ts | 编造产出也能通过 | 逐个路径落盘校验 |
+
+新增 `chain-test.mjs` 锁定上述五个行为，八套回归全绿。
+
+**仍存两处软肋（未修）**：
+- 组队 scope 重叠无人检测 —— 只在 SKILL.md 里约束，代码层不强制
+- 单会话派工数无上限 —— roster 上限 12 兜底，但不精准
 
 ## v0.3.1 修了什么（Hook 不触发的根因）
 
@@ -87,6 +104,7 @@ node .superagent/guard-test.mjs    # 越界判定细节
 node .superagent/scope-test.mjs    # 作用域边界（不误伤主会话）
 node .superagent/records-test.mjs  # 履历机制（写入准入 + 匹配注入 + 不改 owns）
 node .superagent/hooks-test.mjs   # Hook 契约合规（事件/字段/matcher/输出形状）
+node .superagent/chain-test.mjs   # 链路漏洞（SCOPE 强制/派工不覆盖/证据核验）
 ```
 
 ## 包结构
