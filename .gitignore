@@ -21,6 +21,8 @@ _overflow.py
 .superagent/dispatches.json
 
 # 一次性临时脚本
+_*.mjs
+node_modules_*.md
 _rm*.mjs
 
 # 敏感文件（保险起见）
