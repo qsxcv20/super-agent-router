@@ -1,0 +1,115 @@
+# super-agent-router 当前状态
+
+更新：2026-11-09 19:40　版本：v0.3.0
+
+## 状态：可以拿去正式任务上试了
+
+插件已被 MCode 识别并启用（`v2/plugin-hook-cache/` 有完整包副本）。
+**新开一个会话**即可开始试 —— 本会话启动于插件创建之前，Hook 不会在本会话回溯生效。
+
+v0.3.0 新增：实战记录（履历）机制。错题本记失败，履历记成功，两端闭环。
+
+## 核心设计决定
+
+**1. 成员是运行时长出来的，不是预置的。**
+
+插件包里只有协议、内置成员引用和通用 worker，**没有任何业务专项**。
+业务专项在任务真正需要它时才现场配置，用完留在 roster 里供下次复用。
+
+**2. 机制在插件，数据在项目。**
+
+| 层 | 位置 |
+|---|---|
+| 机制（准入规则、归因表、校验逻辑） | 插件包 `references/` + `scripts/` |
+| 数据（实际教训条目 / 履历，运行时增长） | 项目 `.superagent/lessons/` + `.superagent/methods/` |
+
+**3. 错题本必须闭环：只记不读 = 没进化。**
+
+复盘写入 → 下次派工自动前置 → Worker 开工前就知道上次栽在哪。
+
+**4. 履历必须闭环：只记不读 = 没积累。**
+
+验收通过 → 写入方法论「实战记录」段 → 匹配阶段注入 Router → 派工时带给 Worker。
+
+**5. 履历只作参考，不自动改 owns。**
+
+归属声明是人工可审计的资产。让模型根据战绩自行收窄 owns，
+等于让系统自己给自己发权限 —— 不可审计，也不可追责。
+
+**6. Scope 管控分三档：写严格 / 读宽松 / 危险操作一律拦。**
+
+## 管控边界（详见 references/scope.md）
+
+| 类别 | 工具 | 判定 |
+|---|---|---|
+| 写 | write/edit/bash/... | 严格：精确落在白名单内 |
+| 读 | read/glob/grep/... | 宽松：允许读 scope 所在目录树 |
+| 危险 | agent delete/update、部署、发布 | 一律拦，**不论有没有 scope** |
+
+**只约束派工产生的 worker，主会话不受影响**（已实测）。
+绝对路径会折算成相对工作区路径比对，两种写法都能命中。
+
+## 六套机制（均代码强制）
+
+| 机制 | 强制者 | 触发点 |
+|---|---|---|
+| 编排粗筛（普通提问静默放行） | `gate.mjs` | UserPromptSubmit |
+| 履历匹配参考注入 | `gate.mjs` + `records.mjs` | UserPromptSubmit |
+| 越界拦截 / 危险操作拦截 | `guard.mjs` | PreToolUse |
+| 派工登记 + 教训前置 + 履历带入 | `dispatch.mjs` | PreToolUse(task) |
+| 空交付/无证据 block | `watchdog.mjs` | SubagentStop |
+| 造人纪律（方法论先行、命名、闸门） | `roster.mjs` | 手动调用 |
+| 错题本准入 | `lessons-gate.mjs` | 手动调用 |
+| 履历准入（含执行者不可自证） | `record-gate.mjs` | 手动调用 |
+
+## 回归测试（六套全绿）
+
+```
+node .superagent/e2e-test.mjs      # Hook 契约 + 读类/危险管控
+node .superagent/roster-test.mjs   # 造人纪律
+node .superagent/lessons-test.mjs  # 错题本纪律
+node .superagent/guard-test.mjs    # 越界判定细节
+node .superagent/scope-test.mjs    # 作用域边界（不误伤主会话）
+node .superagent/records-test.mjs  # 履历机制（写入准入 + 匹配注入 + 不改 owns）
+```
+
+## 包结构
+
+```
+super-agent-router/
+├── .minimax-plugin/plugin.json      v0.3.0
+├── hooks/hooks.json                  6 个 handler
+├── scripts/                           10 个脚本
+│   ├── lib.mjs         路径归一化 + scope 判定
+│   ├── gate.mjs        UserPromptSubmit 粗筛 + 履历匹配参考
+│   ├── dispatch.mjs    派工登记 + 教训前置 + 履历带入
+│   ├── guard.mjs       越界 + 危险操作拦截
+│   ├── watchdog.mjs    空交付/无证据 block
+│   ├── roster.mjs      交叉核对 + 登记
+│   ├── lessons.mjs     错题本 + 实战记录读取
+│   ├── lessons-gate.mjs 错题本写入闸门
+│   ├── record-gate.mjs  履历写入闸门
+│   └── records.mjs      履历摘要（匹配参考）
+└── skills/super-agent-router/
+    ├── SKILL.md
+    └── references/  teams / routing / brief / bootstrap / review / scope / records
+```
+
+## 正式任务上怎么试
+
+1. **新开一个会话**（关键 —— 本会话 Hook 不回溯生效）
+2. 提一个编排型请求，例如「这个需求拆成两个任务并行做，谁来负责」
+3. 看是否出现 `[super-agent-router] 本轮按编排流程处理` —— 出现说明 Hook 通了
+4. 若出现了但行为不对，把现象告诉我，我按现象调
+
+## 已知边界
+
+- 外部事件触发源（GitHub / 飞书 / CI）未接
+- 主动接活（cron 巡检）未做
+- 履历上限 20 条/成员，超了要先合并淘汰旧的
+- 读宽松到「scope 所在目录树」，比写严格
+
+## 有意未做
+
+- 订阅直通 / 存算分离（单机用不着）
+- Plugin 公开分发（当前仅本机安装 + GitHub 私有备份）

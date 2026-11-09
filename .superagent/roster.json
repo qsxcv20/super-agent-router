@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "updated": "2026-11-09",
+  "note": "专项名录。成员在运行时按任务需要现场配置（source=runtime），不预先预置。内置成员 source=builtin。路由时需与 mavis_agent_list 交叉核对：list 有 roster 无 -> 收编；roster 有 list 无 -> 陈旧不派工。",
+  "members": [
+    {
+      "name": "explore",
+      "kind": "builtin",
+      "source": "builtin",
+      "owns": "只读定位：找代码、找文件、摸清现状",
+      "accepts": "需要先摸清现状再决定怎么做",
+      "reject": "不写文件、不给超出定位范围的结论",
+      "method": null
+    },
+    {
+      "name": "worker",
+      "kind": "builtin",
+      "source": "builtin",
+      "owns": "边界清晰的一次性生产：spec 明确的单点实现",
+      "accepts": "任务描述已充分、改动范围明确",
+      "reject": "跨文件重构、多步调研、需要判断的取舍",
+      "method": null
+    },
+    {
+      "name": "verifier",
+      "kind": "builtin",
+      "source": "builtin",
+      "owns": "对抗性验证：独立复核产出、挑错",
+      "accepts": "需要独立确认产出是否符合验收标准",
+      "reject": "不亲手改、不接受看起来没问题",
+      "method": null
+    }
+  ]
+}

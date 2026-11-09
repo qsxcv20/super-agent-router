@@ -1,0 +1,76 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/scripts/gate.mjs\"",
+            "commandWindows": "node \"${PLUGIN_ROOT}\\scripts\\gate.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/scripts/dispatch.mjs\"",
+            "commandWindows": "node \"${PLUGIN_ROOT}\\scripts\\dispatch.mjs\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "write|edit|multiedit|notebookedit|bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/scripts/guard.mjs\"",
+            "commandWindows": "node \"${PLUGIN_ROOT}\\scripts\\guard.mjs\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "read|glob|grep|list|search",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/scripts/guard.mjs\"",
+            "commandWindows": "node \"${PLUGIN_ROOT}\\scripts\\guard.mjs\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mavis_agent_delete|mavis_agent_update|website_deploy|miniapp",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/scripts/guard.mjs\"",
+            "commandWindows": "node \"${PLUGIN_ROOT}\\scripts\\guard.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/scripts/watchdog.mjs\"",
+            "commandWindows": "node \"${PLUGIN_ROOT}\\scripts\\watchdog.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

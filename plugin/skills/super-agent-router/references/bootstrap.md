@@ -1,0 +1,147 @@
+# 现场配置一个专项成员
+
+## 核心原则
+
+**成员是运行时长出来的，不是预置的。**
+
+插件包里只有内置成员和通用 worker。业务专项成员在任务真正需要它的时候
+才被配置出来，用完留在 roster 里供下次复用。
+
+这带来一个顺序上的硬要求：**先写方法论，再建成员。**
+
+因为本机 `agent create` 不支持绑定技能，成员拿不到外挂的方法论文件。
+所以方法论必须写成项目文件，再由 system_prompt 指向它。
+
+反过来说：**写不出方法论和验收清单，就说明这个专项还没想清楚，不该建。**
+
+## 三步配置
+
+### 第 1 步：写方法论文件
+
+路径：`.superagent/methods/<专项名>.md`
+
+````markdown
+# <专项名>
+
+## 归属
+<一句话说清负责哪一件事>
+
+## 适用
+<什么情况下该派给它>
+
+## 不适用
+<什么情况下不该派给它>
+
+## 方法
+1. <步骤>
+2. <步骤>
+3. <步骤>
+
+## 验收清单
+- [ ] <可验证条件>
+- [ ] <可验证条件>
+
+## 易错
+<从 .superagent/lessons/<专项名>.md 提炼；首次为空>
+
+## 实战记录
+<验收通过的成果由 record-gate.mjs 写入此段；首次为空>
+````
+
+### 第 2 步：建成员
+
+用 `mavis` 工具的 `agent create`：
+
+```
+mavis({ command: "agent create", args: {
+  name: "sa-<专项领域>-<专项动作>",
+  display_name: "<中文显示名>",
+  description: "<归属一句话 + 什么时候派给它。不含项目细节>",
+  system_prompt: <见下>
+} })
+```
+
+system_prompt 模板（方法论路径用项目相对路径，成员开工前自己去读）：
+
+```
+角色：<一句话>
+职责边界：做<...>；不做<...>
+方法论：开工前必须先读 .superagent/methods/<专项名>.md，严格按其中的「方法」执行，
+        完成前逐条核对同文件的「验收清单」，不满足就继续做。
+输入契约：收到 Router 的 brief，字段为 SCOPE / GOAL / ACCEPT / FORBID / EVIDENCE
+输出契约：交付<产物>；必须附 SCOPE 内的文件路径与验证方式
+禁止事项：<...>
+已知易错：读 .superagent/lessons/<专项名>.md（若存在）
+```
+
+### 第 3 步：登记
+
+在 `.superagent/roster.json` 的 `members` 里加一条：
+
+```json
+{
+  "name": "sa-<专项名>",
+  "kind": "specialist",
+  "owns": "<负责哪一件事>",
+  "accepts": "<什么情况下派给它>",
+  "reject": "<什么情况下不该派给它>",
+  "method": ".superagent/methods/<专项名>.md",
+  "source": "runtime",
+  "created_for": "<触发它的那次任务>",
+  "created_at": "<ISO 时间>"
+}
+```
+
+并在 `.superagent/changes.log` 追加一行留痕。
+
+### 第 4 步：验收后记实战记录
+
+成员第一次真正做成某件事之后（**verifier 验收通过**），给它的方法论文件
+「实战记录」段追加一条：
+
+```
+node scripts/record-gate.mjs '{
+  "agent": "<专项名>",
+  "task": "<这次做成的任务>",
+  "domain": "<所属专项领域>",
+  "approach": "<怎么做的，一两句话>",
+  "evidence": "<产出在哪：文件路径 / 验证方式>",
+  "verified_by": "verifier"
+}'
+```
+
+`verified_by` 不能是执行者自己 —— 执行者不可自证，这条由代码强制。
+详见 `references/records.md`。
+
+## 造人闸门
+
+全部满足才可现场配置：
+
+- [ ] 当前任务确实需要「做到精」，不是通用 worker 能对付的
+- [ ] roster 与 agent list 交叉核对后，确实没有同类专精成员
+- [ ] 能一句话说清负责哪一件事
+- [ ] 能写出可勾选的验收清单
+- [ ] 方法论文件已写好（不是打算写）
+- [ ] 本次会话尚未配置过成员
+- [ ] roster 总数 < 12
+- [ ] description 不含项目细节（成员是账号级全局可见的）
+
+## 命名
+
+```
+sa-<专项领域>-<专项动作>
+```
+
+禁用泛词：analyst / assistant / expert / helper —— 那是角色不是专项。
+
+避开内置名：explore / worker / verifier / mavis。
+
+## 常见错误
+
+| 错误 | 后果 |
+|---|---|
+| 先建成员再想方法论 | 成员没有方法论，退化成通用 agent，白造 |
+| 名字用 `sa-data-analyst` | 筐，不是专项，验收标准写不出来 |
+| 每次任务都新建 | roster 膨胀，三个月后是一坨 |
+| description 写进项目细节 | 项目上下文泄漏到账号层 |
+| 方法论只放在 system_prompt 里 | 换个项目就没了，无法复用和 review |

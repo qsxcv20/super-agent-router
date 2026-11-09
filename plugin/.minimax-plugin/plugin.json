@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "name": "super-agent-router",
+  "displayName": "Super Agent Router",
+  "version": "0.3.0",
+  "description": "Super-agent 编排：按任务匹配专项成员、现场配置新成员、组队派工、scope 越界拦截、独立验收，错题本记失败、实战记录记成功，两端闭环。",
+  "author": "yang2",
+  "icon": "icon.png",
+  "darkIcon": "icon-dark.png",
+  "category": "Code",
+  "exampleQueries": [
+    "用 super-agent-router 帮我把这个需求拆给合适的专项成员",
+    "这个任务该派给谁？帮我组建团队"
+  ],
+  "apps": [],
+  "mcpServers": [],
+  "skills": [
+    "skills/super-agent-router/SKILL.md"
+  ],
+  "agents": [],
+  "hooks": [
+    "hooks/hooks.json"
+  ]
+}

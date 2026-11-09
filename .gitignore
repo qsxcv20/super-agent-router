@@ -1,0 +1,32 @@
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# 临时与产物
+*.tmp
+*.log
+!changes.log
+_shots/
+_render.py
+_overflow.py
+
+# 运行时状态（不进仓库）
+.superagent/dispatches.json
+
+# 一次性临时脚本
+_rm*.mjs
+
+# 敏感文件（保险起见）
+.env
+.env.*
+*.key
+*.pem
+credentials*
+secrets*
