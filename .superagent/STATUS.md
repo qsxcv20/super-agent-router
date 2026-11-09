@@ -5,9 +5,23 @@
 ## 状态：可以拿去正式任务上试了
 
 插件已被 MCode 识别并启用（`v2/plugin-hook-cache/` 有完整包副本）。
-**新开一个会话**即可开始试 —— 本会话启动于插件创建之前，Hook 不会在本会话回溯生效。
+**必须新开一个会话** —— Hook 按会话激活，本会话启动于插件创建之前。
+
+v0.3.1 修复：按官方 Hook 契约修正，SessionStart 事件补齐 ——
+会话一开始就注入编排协议，模型自动知道该派工。详见下方「v0.3.1 修了什么」。
 
 v0.3.0 新增：实战记录（履历）机制。错题本记失败，履历记成功，两端闭环。
+
+## v0.3.1 修了什么（Hook 不触发的根因）
+
+| 问题 | 根因 | 修法 |
+|---|---|---|
+| Hook 从不触发 | 本会话 17:16 启动，插件 17:35 才创建 —— Hook 按会话激活 | 新增 `SessionStart` 事件 + **必须新开会话** |
+| 编排意图可能匹配不上 | `UserPromptSubmit` 写了空 `matcher: ""` | 官方要求省略该字段，已删 |
+| 模型不知道有编排机制 | 只有提问时才注入 | `SessionStart` 在会话开始就注入协议 |
+
+官方契约原文：*"Plugin recognition alone does not verify command execution."*
+缓存副本存在 ≠ Hook 会跑。
 
 ## 核心设计决定
 
@@ -53,6 +67,7 @@ v0.3.0 新增：实战记录（履历）机制。错题本记失败，履历记�
 
 | 机制 | 强制者 | 触发点 |
 |---|---|---|
+| 编排协议注入（会话开始即生效） | `session-start.mjs` | SessionStart |
 | 编排粗筛（普通提问静默放行） | `gate.mjs` | UserPromptSubmit |
 | 履历匹配参考注入 | `gate.mjs` + `records.mjs` | UserPromptSubmit |
 | 越界拦截 / 危险操作拦截 | `guard.mjs` | PreToolUse |
@@ -71,6 +86,7 @@ node .superagent/lessons-test.mjs  # 错题本纪律
 node .superagent/guard-test.mjs    # 越界判定细节
 node .superagent/scope-test.mjs    # 作用域边界（不误伤主会话）
 node .superagent/records-test.mjs  # 履历机制（写入准入 + 匹配注入 + 不改 owns）
+node .superagent/hooks-test.mjs   # Hook 契约合规（事件/字段/matcher/输出形状）
 ```
 
 ## 包结构
@@ -78,9 +94,10 @@ node .superagent/records-test.mjs  # 履历机制（写入准入 + 匹配注入 
 ```
 super-agent-router/
 ├── .minimax-plugin/plugin.json      v0.3.0
-├── hooks/hooks.json                  6 个 handler
-├── scripts/                           10 个脚本
+├── hooks/hooks.json                  7 个 handler
+├── scripts/                           11 个脚本
 │   ├── lib.mjs         路径归一化 + scope 判定
+│   ├── session-start.mjs SessionStart 注入编排协议
 │   ├── gate.mjs        UserPromptSubmit 粗筛 + 履历匹配参考
 │   ├── dispatch.mjs    派工登记 + 教训前置 + 履历带入
 │   ├── guard.mjs       越界 + 危险操作拦截

@@ -132,7 +132,7 @@ node .superagent/records-test.mjs  # 履历机制
 .
 ├── plugin/                      # 插件包（复制到 ~/.minimax/plugins/）
 │   ├── .minimax-plugin/plugin.json
-│   ├── hooks/hooks.json          # 6 个 handler
+│   ├── hooks/hooks.json          # 7 个 handler（含 SessionStart）
 │   ├── scripts/                  # 10 个脚本，纪律的执行者
 │   └── skills/super-agent-router/
 │       ├── SKILL.md              # Router 协议 + 铁律
@@ -162,7 +162,27 @@ node .superagent/records-test.mjs  # 履历机制
 
 > 这个需求拆成两个任务并行做，谁来负责？
 
-### 3. 派工时 scope 要写具体路径
+### 3. 先确认 Hook 生效（重要）
+
+插件的 Hook **按会话激活**。安装或更新插件后，**必须新开一个会话**，
+否则本会话里 Hook 不会触发。
+
+新会话里提一句编排型请求，例如：
+
+> 这个需求拆成两个任务并行做，谁来负责？
+
+看到出现 `[super-agent-router] 本轮按编排流程处理` 就说明 Hook 通了。
+如果没出现，检查：
+
+```bash
+# 看 Hook 有没有真的跑过（dispatch 会写台账）
+ls ~/.minimax/v2/plugin-data/hooks/super-agent-router/
+
+# 手工验证单个 Hook
+node -e "process.stdin.pipe(process.stdout)" | echo '{"hook_event_name":"SessionStart","source":"startup"}' | node ~/.minimax/plugins/super-agent-router/scripts/session-start.mjs
+```
+
+### 4. 派工时 scope 要写具体路径
 
 ```markdown
 SCOPE: src/auth/login.ts, src/auth/session.ts
