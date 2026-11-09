@@ -40,6 +40,28 @@
       "source": "runtime",
       "created_for": "把插件包升到 v0.4.0 并补齐发布说明",
       "created_at": "2026-11-09T12:48:07.216Z"
+    },
+    {
+      "name": "sa-orchestration-audit",
+      "kind": "specialist",
+      "owns": "编排机制行为缺陷审计：沿 guard/dispatch/watchdog/gate 的判定分支逐条找出可复现的行为漏洞",
+      "accepts": "怀疑某条判定路径会漏拦、误拦，或机制写进了台账却没人读（静默失效）",
+      "reject": "不改机制代码本身（审计与修复必须分开），不做发布，不做对外可见动作",
+      "method": ".superagent/methods/sa-orchestration-audit.md",
+      "source": "runtime",
+      "created_for": "审计 v0.4.0 编排机制的缺陷，为 v0.5.0 提供实证输入",
+      "created_at": "2026-11-09T14:47:48.889Z"
+    },
+    {
+      "name": "sa-context-trace",
+      "kind": "specialist",
+      "owns": "上下文注入与传递链路追踪：查清每段上下文的来源、注入时机、载体格式与接收方，产出缺口清单",
+      "accepts": "需要回答「某个成员到底看到了什么、哪些没看到」，或怀疑某段上下文实际没到位",
+      "reject": "不改机制代码，不下缺陷审计结论，不做发布，不做对外可见动作",
+      "method": ".superagent/methods/sa-context-trace.md",
+      "source": "runtime",
+      "created_for": "评估同组成员是否需要共享上下文，为 v0.5.0 提供事实依据",
+      "created_at": "2026-11-09T14:47:48.954Z"
     }
   ]
 }
