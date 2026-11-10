@@ -1,0 +1,161 @@
+{
+  "note": "F-02 变异定义表（外置）。为什么外置：长字符串内嵌在脚本里时，转义层数是主要故障源 —— 上一轮就是这么把脚本结构弄坏的。每个变异体 = 把某处实现回退成修复前的写法，然后跑同一套断言，必须变红。",
+  "expectations": "expectFail 里写的是缺陷号；断言标签以该缺陷号开头，harness 按前缀匹配变红的断言。",
+  "mutations": [
+    {
+      "id": "M1",
+      "defect": "D-59",
+      "desc": "rename 重试整段回退（重试循环只跑一次 ⇒ 等价于修复前的单次 rename）",
+      "file": "plugin/scripts/lessons.mjs",
+      "edits": [
+        {
+          "find": "    for (let attempt = 0; attempt < RENAME_MAX_ATTEMPTS; attempt++) {",
+          "replace": "    for (let attempt = 0; attempt < 1; attempt++) {"
+        }
+      ],
+      "suites": [
+        "lessons-test",
+        "records-test"
+      ],
+      "expectFail": [
+        "D-59"
+      ]
+    },
+    {
+      "id": "M2",
+      "defect": "D-60",
+      "desc": "落盘回读校验失败后的回滚被摘掉（失败写入不再撤销覆盖）",
+      "file": "plugin/scripts/lessons.mjs",
+      "edits": [
+        {
+          "find": "    const rollback = () => {\n      try {\n        const rb = file + '.rollback-' + process.pid + '-' + Math.random().toString(36).slice(2, 8);\n        fs.writeFileSync(rb, raw, 'utf8');\n        fs.renameSync(rb, file);\n      } catch { /* 回滚失败：至少没有谎报成功 */ }\n    };",
+          "replace": "    const rollback = () => {\n      /* 变异体 M2：回滚被摘掉 —— 校验失败后文件停在被覆盖的状态，前序条目被抹掉 */\n    };"
+        }
+      ],
+      "suites": [
+        "lessons-test",
+        "records-test"
+      ],
+      "expectFail": [
+        "D-60"
+      ]
+    },
+    {
+      "id": "M3",
+      "defect": "D-61",
+      "desc": "抢锁判据回退（只认 EEXIST，Windows 的 EPERM 被误判成失败）",
+      "file": "plugin/scripts/lessons.mjs",
+      "edits": [
+        {
+          "find": "      const taken = code === 'EEXIST' || code === 'EPERM';",
+          "replace": "      const taken = code === 'EEXIST';"
+        }
+      ],
+      "suites": [
+        "lessons-test"
+      ],
+      "expectFail": [
+        "D-61"
+      ]
+    },
+    {
+      "id": "M4",
+      "defect": "D-62",
+      "desc": "锁参数回退到修复前的值（等待超时 60s→15s、偷锁阈值 180s→60s）",
+      "file": "plugin/scripts/lessons.mjs",
+      "edits": [
+        {
+          "find": "export const LOCK_WAIT_TIMEOUT_MS = 60000;\nexport const LOCK_STALE_MS = 180000;",
+          "replace": "export const LOCK_WAIT_TIMEOUT_MS = 15000;\nexport const LOCK_STALE_MS = 60000;"
+        }
+      ],
+      "suites": [
+        "lessons-test"
+      ],
+      "expectFail": [
+        "D-62"
+      ]
+    },
+    {
+      "id": "M5",
+      "defect": "D-52",
+      "desc": "写锁被摘掉（保留临时文件 + 原子替换 + 回读校验）",
+      "file": "plugin/scripts/lessons.mjs",
+      "edits": [
+        {
+          "find": "  return withFileLock(file, () => {",
+          "replace": "  return ((() => {"
+        },
+        {
+          "find": "    return { ok: true, raw: after };\n  });\n}",
+          "replace": "    return { ok: true, raw: after };\n  })());\n}"
+        }
+      ],
+      "suites": [
+        "lessons-test",
+        "records-test"
+      ],
+      "expectFail": [
+        "D-52"
+      ]
+    },
+    {
+      "id": "M6",
+      "defect": "D-52",
+      "desc": "整段回退到修复前的「读全文 → 拼串 → 整体覆盖」（无锁、无原子替换）",
+      "file": "plugin/scripts/lessons.mjs",
+      "edits": [
+        {
+          "find": "  return withFileLock(file, () => {",
+          "replace": "  return ((() => {"
+        },
+        {
+          "find": "        fs.renameSync(tmp, file);",
+          "replace": "        fs.writeFileSync(file, built.text, 'utf8');"
+        },
+        {
+          "find": "    return { ok: true, raw: after };\n  });\n}",
+          "replace": "    return { ok: true, raw: after };\n  })());\n}"
+        }
+      ],
+      "suites": [
+        "lessons-test",
+        "records-test"
+      ],
+      "expectFail": [
+        "D-52"
+      ]
+    },
+    {
+      "id": "M7",
+      "defect": "D-52",
+      "desc": "写锁与回读校验一起被摘掉 ⇒ 写入静默丢条目（返回 ok 却没落盘）",
+      "file": "plugin/scripts/lessons.mjs",
+      "edits": [
+        {
+          "find": "  return withFileLock(file, () => {",
+          "replace": "  return ((() => {"
+        },
+        {
+          "find": "    if (built.marker && after.indexOf(built.marker) === -1) {",
+          "replace": "    if (false && built.marker && after.indexOf(built.marker) === -1) {"
+        },
+        {
+          "find": "    if (typeof built.expectCount === 'number') {",
+          "replace": "    if (false && typeof built.expectCount === 'number') {"
+        },
+        {
+          "find": "    return { ok: true, raw: after };\n  });\n}",
+          "replace": "    return { ok: true, raw: after };\n  })());\n}"
+        }
+      ],
+      "suites": [
+        "lessons-test",
+        "records-test"
+      ],
+      "expectFail": [
+        "D-52"
+      ]
+    }
+  ]
+}

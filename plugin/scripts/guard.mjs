@@ -33,7 +33,9 @@ import {
   DANGEROUS_COMMAND, detectDangerousAccountCommand, hasCommandSubstitution,
   recordScopeRequest, memberTier, withinWorkspace, touchesSuperagentPath, TIER_FULL,
   TIER_SCOPED, normScopeEntry, isPrivateMemoryPath, isPrivateMemoryEntry,
-  expandsPrivateMemoryTree, PRIVATE_MEMORY_DIRS
+  expandsPrivateMemoryTree, PRIVATE_MEMORY_DIRS,
+  projectRoot, readPluginPackageName, ownPackageAuthority,
+  expandHomePath, trimPathPunct
 } from './lib.mjs';
 
 const rawStdin = readStdin();
@@ -291,9 +293,27 @@ function allowedByExact(target) {
 // 主防线在这里：子代理上下文（载荷带 agent_type）里执行这些脚本 = 直接拒绝。
 // 父会话不受影响 —— 父会话载荷里没有 agent_type，上面已经早退了。
 //
-// 匹配按**插件根目录下的具体文件**，不按脚本名裸匹配：
-// 工作区里的同名副本是普通文件（机制维护类成员要改的就是它们），按名字拦会误伤；
-// 插件安装目录下的那一份才是运行时真正加载的权威入口。
+// **归属判据 = 插件包身份**（契约 S13.3 第 1 条 / F-01）：
+// 一个文件属于本插件包，当且仅当它所在目录树里有 .minimax-plugin/plugin.json，
+// 且那个包的包名与本插件一致。仓库 plugin/、安装目录
+// ~/.minimax/plugins/super-agent-router、运行时缓存树 sha256-tree-v1-* 都满足。
+//
+// 为什么不能锚在「运行中 guard 自己所在的那一份」（上一轮的做法）：
+//   那个锚点只覆盖**一份**副本 —— 仓库副本 plugin/scripts/scope-amend.mjs
+//   完全不在锚点内。于是 worker 的 SCOPE 覆盖 plugin/scripts/ 时，
+//   整条提权链在仓库副本上跑通：名录里等级变 full、变更账写下假批准人、
+//   下一次派工即按 full 生效（F-01）。
+//   上一轮的口径「工作区里的同名副本是普通文件，不误拦」**是错的** ——
+//   那份副本跑起来做的是同一件事（读同一个名录、写同一个变更账）。
+//
+// 为什么不用脚本名裸匹配：别的项目里也可能有 roster.mjs / scope-amend.mjs，
+// 按名字拦会把普通文件当权威入口（误伤）；
+// 「路径里含 scripts/」这种模糊特征同样会误伤 —— 归属必须落在**身份**上。
+//
+// 这一条管的是 **bash 通道**：命令文本里出现「本插件包里的权威面脚本」就拒
+// （执行与读取都算 —— 读一份再改名执行是同一条链）。
+// **write / edit / read 工具不受这条限制** —— 机制维护类成员要改的就是它们，
+// 改写仍受 scope 白名单与 .superagent/ 私有目录规则约束。
 const AUTHORITY_SCRIPTS = [
   'scope-amend.mjs',    // 提权 / 批准扩权
   'release-slot.mjs',   // 释放名额
@@ -302,50 +322,99 @@ const AUTHORITY_SCRIPTS = [
   'roster.mjs'          // 登记成员
 ];
 
-// 插件根目录（<root>/scripts/guard.mjs -> <root>）。
-// 必须落成**绝对路径**：相对路径下工作目录一变，匹配就跟着变 ——
-// 仓库副本与安装副本的行为必须一致，否则同一套断言在两处给出不同结论。
-function pluginRootDir() {
+// 本插件的包身份：从**运行中这份副本**所在的位置反推包根，再读包名。
+//
+// 为什么这里仍然用 process.argv[1]：它只用来确定「本插件是谁」
+// （包名），不再用来确定「哪些文件算权威面脚本」——
+// 后者已经改成按**插件包身份**判（每一份副本各自按身份自证），
+// 所以运行中的副本换了位置（缓存树 / 安装目录 / 仓库）不影响判定结果。
+//
+// 读不到包名时返回空串：归属判定会退化成「只要落在某个插件包里就算」，
+// 即宁可多判不可漏判 —— 归属判不出来时不能默认放行。
+let ownPkgCache = null;
+function ownPackage() {
+  if (ownPkgCache) return ownPkgCache;
+  let root = '';
   try {
     const p = String(process.argv[1] || '');
-    if (!p) return '';
-    return path.resolve(path.dirname(path.dirname(p)));
-  } catch (e) { return ''; }
+    if (p) root = path.resolve(path.dirname(path.dirname(p)));
+  } catch (e) { root = ''; }
+  ownPkgCache = { root, name: root ? readPluginPackageName(root) : '' };
+  return ownPkgCache;
 }
 
-// 把 ~ / $HOME / %USERPROFILE% 展开成真实家目录。
+// 把 ~ / $HOME / %USERPROFILE% / $env:USERPROFILE% 展开成真实家目录。
+// 展开规则本身在 lib.mjs 的 expandHomePath()（纯函数，可单独断言）。
 // 不展开的话，`node $HOME/.minimax/plugins/.../scope-amend.mjs` 这种写法
 // 会因为路径对不上而绕过权威面脚本判定 —— 护栏最怕的就是这种「换个写法就躲开」。
 function expandHome(p) {
-  let s = String(p || '');
   let home = '';
-  try { home = String(os.homedir() || '').replace(/\\/g, '/'); } catch (e) { home = ''; }
-  if (!home) return s;
-  if (s === '~') return home;
-  if (s.startsWith('~/')) return home + s.slice(1);
-  const prefixes = ['$HOME/', '$USERPROFILE/', '$env:USERPROFILE/', '%USERPROFILE%/'];
-  for (const pre of prefixes) {
-    if (s.startsWith(pre)) return home + '/' + s.slice(pre.length);
-  }
-  return s;
+  try { home = String(os.homedir() || ''); } catch (e) { home = ''; }
+  return expandHomePath(p, home);
 }
 
-// 命令里是否指向插件安装目录下的权威面脚本。命中返回脚本名，否则空串。
+// 执行类命令的段首词：只有它们后面的参数才可能是「被执行的文件」。
+// 用来把「插件目录里的相对写法」（cd 进插件目录后跑裸文件名）纳入判定，
+// 同时不让「随便一个同名文件」都被当成权威面脚本。
+const EXEC_COMMANDS = new Set(['node', 'bun', 'deno', 'tsx', 'ts-node', 'npx', 'bunx']);
+
+// 相对路径要按**多个根**解析 —— 只按一个根解析，换个目录执行同一条相对路径
+// 就绕开了判定（上一轮「只锚定一个根」的漏法就是这么来的）。
+// 三个根各管一段：
+//   · 当前工作目录 —— worker 实际执行命令时的位置；
+//   · 工作区根 —— brief 里写的相对路径按工作区解释；
+//   · 本插件包根 —— 从插件目录里跑 scripts/xxx.mjs 的常见写法。
+function candidateBases() {
+  const workspace = [];
+  const add = (b) => {
+    const s = String(b || '').trim();
+    if (!s) return;
+    const v = s.replace(/\\/g, '/').replace(/\/+$/, '');
+    if (v && !workspace.includes(v)) workspace.push(v);
+  };
+  try { add(process.cwd()); } catch (e) {}
+  add(projectRoot());
+  const pkgRoot = String(ownPackage().root || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  return { workspace, pkgRoot, pkgScripts: pkgRoot ? pkgRoot + '/scripts' : '' };
+}
+
+// 命令里是否指向**本插件包**的权威面脚本。命中返回脚本名，否则空串。
+//
+// 判定落在「插件包身份」上（ownPackageAuthority）：
+// 文件名在权威面清单里 + 所在目录树里有 .minimax-plugin/plugin.json
+// + 包名与本插件一致。**不**按路径长相、**不**按脚本名裸匹配。
+//
+// 相对路径的解析口径（为什么不是「拼上插件根就行」）：
+//   把任意相对路径拼到插件根下再判身份，会让**任何**以权威面脚本命名的文件
+//   （比如别的项目的 docs/roster.mjs）都被当成插件包里的东西 —— 那就是脚本名裸匹配。
+//   所以插件根这一支只接**插件目录相对写法**：'scripts/xxx.mjs' 与裸文件名，
+//   而且只对执行类命令生效。
 function authorityScriptHit(cmd) {
-  const root = pluginRootDir();
-  if (!root) return '';
-  const base = root.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-  const text = String(cmd || '');
-  const toks = extractPathTokens(text).concat(extractWriteTargets(text));
-  for (const raw of toks) {
-    let t = expandHome(String(raw || '')).replace(/\\/g, '/').trim();
-    if (!t) continue;
-    // 相对路径按**插件根**解析（从插件目录里跑 scripts/xxx.mjs 的常见写法）；
-    // 不按工作区解析 —— 工作区里的同名副本是普通文件，不是权威入口。
-    if (!/^[a-z]:\//i.test(t) && !t.startsWith('/')) t = base + '/' + t;
-    const low = t.toLowerCase();
-    for (const name of AUTHORITY_SCRIPTS) {
-      if (low === base + '/scripts/' + name) return name;
+  const toks = splitCommandTokens(String(cmd || ''));
+  const own = ownPackage();
+  const bases = candidateBases();
+  for (let i = 0; i < toks.length; i++) {
+    const t = trimPathPunct(toks[i]);
+    if (!isPathToken(t)) continue;
+    const prev = i > 0 ? toks[i - 1].toLowerCase() : '';
+    const expanded = expandHome(t).replace(/\\/g, '/').trim();
+    if (!expanded) continue;
+    const cands = [];
+    if (/^[a-z]:\//i.test(expanded) || expanded.startsWith('/')) {
+      cands.push(expanded);
+    } else {
+      for (const b of bases.workspace) cands.push(b + '/' + expanded);
+      if (EXEC_COMMANDS.has(prev)) {
+        if (!/[\\/]/.test(expanded)) {
+          if (bases.pkgScripts) cands.push(bases.pkgScripts + '/' + expanded);
+        } else if (expanded.indexOf('scripts/') === 0 && bases.pkgRoot) {
+          cands.push(bases.pkgRoot + '/' + expanded);
+        }
+      }
+    }
+    for (const c of cands) {
+      const hit = ownPackageAuthority(c, { packageName: own.name, names: AUTHORITY_SCRIPTS });
+      if (hit) return hit;
     }
   }
   return '';

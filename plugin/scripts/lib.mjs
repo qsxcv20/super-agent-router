@@ -138,10 +138,20 @@ export function isPathLike(s) {
   if (!s) return false;
   const t = String(s).trim();
   if (!t || t.length > 200) return false;
-  if (!PATH_LIKE.test(t)) return false;
   const body = splitScopeEntry(t) ? splitScopeEntry(t).path : t;
   if (!/[\\/.]/.test(body)) return false;
-  return true;
+  if (PATH_LIKE.test(t)) return true;
+  // 绝对 Windows 路径（X:\ 或 X:/）：**整体**算一个路径，不受字符集限制。
+  //
+  // 为什么单列这一支：PATH_LIKE 的字符集不收空格、不收中文，
+  // 而 Windows 上的绝对路径两者都可能带（本仓库自己的路径就带空格：
+  // "C:\Users\yang2\Documents\MiniMax\mini code的插件\..."）。
+  // 以前这类条目被整条丢掉 —— 白名单静默变窄，一条本该生效的白名单不生效（F-04）。
+  //
+  // 判据是**形态**（盘符开头），不是「有没有空格/有没有中文」：
+  // 一句自然语言不会以 "X:\" 开头，所以这一支不会把中文句子当路径收进来。
+  if (/^[A-Za-z]:[\\/]/.test(body)) return true;
+  return false;
 }
 
 // 把 scope 条目拆成 { readOnly, path }。
@@ -300,25 +310,76 @@ function trimScopePunct(v) {
   return String(v || '').replace(/[.,;:!?)\]}'"、，。；：]+$/, '').trim();
 }
 
+// 条目切分口径（契约 S2 第 7 条 / F-04）：
+//
+//   1. 先按**逗号**切（逗号是条目分隔符；路径里几乎不会出现逗号）。
+//   2. 每个片段：
+//      · 被引号包住（"…" / '…'）→ **整体**算一个条目（引号剥掉）；
+//      · 以盘符开头（X:\ 或 X:/）→ **整体**算一个条目
+//        （Windows 绝对路径里可以有空格 —— 本仓库自己的路径就带空格）；
+//      · 否则 → 按空白切（旧口径）。
+//   3. **相对**路径里带空格 → 必须用引号包住。
+//      两种形态（带空格的相对路径 / 不带空格的相对路径）在切分前长得一样，
+//      没有可靠的自动判据 —— 与其猜错（猜错就静默截断），不如要求显式加引号。
+//
+// 为什么以前会静默截断（F-04）：按空白切 → 'C:\...\mini code的插件\src\app.ts'
+// 被切成 'C:\...\mini' 与 'code的插件\src\app.ts'；前半截被当成条目收进白名单，
+// 后半截被丢弃 —— 于是这条本该生效的白名单**静默不生效**（目标被判成越界）。
+// 本仓库自己的路径就带空格，所以这不是理论问题。
 function tokenizeScopeText(text) {
   const out = [];
-  const parts = String(text || '').split(/[,\uff0c\s]+/).filter(Boolean);
   let pendingReadOnly = false;
-  for (const part of parts) {
-    let clean = part.replace(/^["'`]+|["'`]+$/g, '');
-    if (!clean) continue;
-    if (/^ro\s*:$/i.test(clean)) { pendingReadOnly = true; continue; }
-    const inline = clean.match(/^ro\s*:\s*(.+)$/i);
-    if (inline) {
-      const v = trimScopePunct(inline[1]);
-      out.push(v ? { value: v, readOnly: true } : { value: '', readOnly: true, malformed: true });
+  const fragments = String(text || '').split(/[,\uff0c]+/);
+  for (const frag of fragments) {
+    let raw = String(frag || '').trim();
+    if (!raw) continue;
+    // 'ro:' 前缀（连写 'ro:path' 与 'ro: path' 都认）。
+    //
+    // **不**认 'ro : path'（冒号前有空格）：旧口径下那种写法就没被支持
+    // （'ro' 被当成无路径的 token 丢掉，后面的路径按**可写**处理）。
+    // 这里保持原样 —— 不在本次改造范围内静默改变既有语义。
+    const pm = raw.match(/^ro:(.*)$/i);
+    if (pm) {
+      const rest = pm[1].trim();
+      if (!rest) { pendingReadOnly = true; continue; }   // 独立成词的 'ro:' → 沿用旧的 pending 语义
+      raw = rest;
+      // 与旧口径一致：'ro:' 之后的**第一个**条目是只读。
+      pendingReadOnly = true;
+    }
+    // 引号包裹 → 整体算一个条目（引号里可以有空格）
+    const quoted = raw.match(/^(["'`])([\s\S]*)\1$/);
+    if (quoted) {
+      const v = trimScopePunct(quoted[2]);
+      out.push(v ? { value: v, readOnly: pendingReadOnly, whole: true }
+                 : { value: '', readOnly: pendingReadOnly, malformed: true });
       pendingReadOnly = false;
       continue;
     }
-    clean = trimScopePunct(clean);
-    if (!clean) continue;
-    out.push({ value: clean, readOnly: pendingReadOnly });
-    pendingReadOnly = false;
+    // 盘符开头 → 整体算一个条目（绝对路径里可以有空格）
+    if (/^[A-Za-z]:[\\/]/.test(raw)) {
+      const v = trimScopePunct(raw);
+      out.push(v ? { value: v, readOnly: pendingReadOnly, whole: true }
+                 : { value: '', readOnly: pendingReadOnly, malformed: true });
+      pendingReadOnly = false;
+      continue;
+    }
+    // 其余：按空白切（保留旧的 ro: 语义）
+    for (const part of raw.split(/\s+/).filter(Boolean)) {
+      let clean = part.replace(/^["'`]+|["'`]+$/g, '');
+      if (!clean) continue;
+      if (/^ro\s*:$/i.test(clean)) { pendingReadOnly = true; continue; }
+      const inline = clean.match(/^ro\s*:\s*(.+)$/i);
+      if (inline) {
+        const v = trimScopePunct(inline[1]);
+        out.push(v ? { value: v, readOnly: true } : { value: '', readOnly: true, malformed: true });
+        pendingReadOnly = false;
+        continue;
+      }
+      clean = trimScopePunct(clean);
+      if (!clean) continue;
+      out.push({ value: clean, readOnly: pendingReadOnly });
+      pendingReadOnly = false;
+    }
   }
   if (pendingReadOnly) out.push({ value: '', readOnly: true, malformed: true });
   return out;
@@ -367,7 +428,9 @@ function collectScopeTokens(chunk, entries, rejected) {
       if (tok.malformed) rejected.push('ro:');
       continue;
     }
-    if (isPathLike(tok.value)) {
+    // 引号 / 盘符形态的条目**已经证明「这是一个路径」**（切分阶段按形态认的），
+    // 不再受「像路径」的字符集限制 —— 路径里可以有空格与中文（F-04）。
+    if (isPathLike(tok.value) || (tok.whole && /[\\/]/.test(tok.value))) {
       entries.push(tok.readOnly ? (READONLY_PREFIX + ' ' + tok.value) : tok.value);
       continue;
     }
@@ -380,6 +443,106 @@ function collectScopeTokens(chunk, entries, rejected) {
 // 从派工 prompt 里抽 scope 白名单（对外语义不变：返回条目数组）
 export function extractScope(text) {
   return extractScopeDetail(text).entries;
+}
+
+// ── 插件包身份（权威面脚本的归属判据）──────────────────────
+//
+// 为什么归属必须落在**身份**上，而不是路径长相或脚本名：
+//   权威面脚本（提权 / 批准扩权 / 写履历 / 写错题本 / 登记成员）是**权限入口**，
+//   子代理不得执行（契约 S13.3 第 1 条）。但「这个文件是不是权威面脚本」不能只看：
+//     · **路径长相**（必须落在某个固定目录下）→ 只覆盖**一份**副本：
+//       仓库副本 / 安装副本 / 运行时缓存树里其余几份全部漏掉（F-01 的根因）；
+//     · **脚本名裸匹配** → 别的项目里也有 roster.mjs / scope-amend.mjs，会误伤普通文件。
+//   唯一稳定的身份是**插件包**：目录树里有 .minimax-plugin/plugin.json 的那一棵，
+//   才是本插件包的代码。仓库 plugin/、安装目录 ~/.minimax/plugins/super-agent-router、
+//   运行时缓存树 sha256-tree-v1-* 都满足这一条。
+export const PLUGIN_PACKAGE_MANIFEST = '.minimax-plugin/plugin.json';
+
+// 从文件所在目录往上找：第一个含 .minimax-plugin/plugin.json 的目录就是包根。
+// 找不到返回空串 —— 那就是**普通文件**，不是插件包里的东西。
+export function findPluginPackageRoot(filePath) {
+  const raw = String(filePath || '').trim();
+  if (!raw) return '';
+  let dir = path.dirname(path.resolve(raw));
+  const seen = new Set();
+  while (dir && !seen.has(dir)) {
+    seen.add(dir);
+    try {
+      if (fs.existsSync(path.join(dir, PLUGIN_PACKAGE_MANIFEST))) return dir;
+    } catch (e) {
+      // 这一层读不到就当它不是包根，继续往上找 —— 判定不成立不等于放行，
+      // 往上还有别的候选根（真正的包根在更上层的情况是常态）。
+    }
+    const up = path.dirname(dir);
+    if (!up || up === dir) break;
+    dir = up;
+  }
+  return '';
+}
+
+// 家目录展开（~ / $HOME / %USERPROFILE% / $env:USERPROFILE[%]）。
+//
+// 为什么单列成一个函数：这是**判定的一环**，不是字符串美化 ——
+// 不展开的话，`node $HOME/.minimax/plugins/.../scope-amend.mjs` 这种写法
+// 因为「路径对不上」而绕过权威面脚本判定。护栏最怕的就是「换个写法就躲开」。
+//
+// 导出成纯函数（家目录由调用方给），是为了能单独断言展开结果 ——
+// 「判定被拦」可能由别的分支命中，只有展开结果本身对，才说明这一环真的生效。
+export function expandHomePath(p, homeDir) {
+  const s = String(p || '');
+  const home = String(homeDir || '').replace(/\\/g, '/');
+  if (!home) return s;
+  if (s === '~') return home;
+  if (s.startsWith('~/') || s.startsWith('~\\')) return home + '/' + s.slice(2).replace(/\\/g, '/');
+  // '$env:USERPROFILE' 是 PowerShell 写法（无尾 %）；'%USERPROFILE%' 是 cmd 写法。
+  // 两种都收，另外把 '$env:USERPROFILE%' 也收下 —— 少认一种写法就是多一个可绕的洞。
+  const prefixes = ['$HOME', '$USERPROFILE', '$env:USERPROFILE', '$env:USERPROFILE%', '%USERPROFILE%'];
+  for (const pre of prefixes) {
+    if (s === pre) return home;
+    if (s.startsWith(pre + '/') || s.startsWith(pre + '\\')) {
+      return home + '/' + s.slice(pre.length + 1).replace(/\\/g, '/');
+    }
+  }
+  return s;
+}
+
+// 读插件包的名字（plugin.json 的 name 字段）。读不到 / 解析失败返回空串。
+export function readPluginPackageName(pkgRoot) {
+  const root = String(pkgRoot || '').trim();
+  if (!root) return '';
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(root, PLUGIN_PACKAGE_MANIFEST), 'utf8'));
+    return String((j && j.name) || '');
+  } catch (e) { return ''; }
+}
+
+// 这个绝对路径是不是「本插件包里的权威面脚本」？命中返回脚本名，否则空串。
+//
+// opts: { packageName, names }
+//   packageName —— 本插件的包名（从运行中的那份副本反推）。
+//   names       —— 权威面脚本的文件名清单。
+//
+// 判定顺序（任一步不成立就不算命中）：
+//   1. 文件名在权威面脚本清单里；
+//   2. 它所在目录树里有 .minimax-plugin/plugin.json（= 落在某个插件包里）；
+//   3. 那个包的包名与本插件一致 —— **别的插件的包不算**。
+//      本插件的包名读不到时（第 3 步判不出来），按「只要落在插件包里就算」处理：
+//      归属判不出来时不能默认放行（宁可多判不可漏判，契约 S5.5 的同一条立场）。
+export function ownPackageAuthority(absFilePath, opts) {
+  const o = opts || {};
+  const names = Array.isArray(o.names) ? o.names : [];
+  const abs = String(absFilePath || '').replace(/\\/g, '/').trim();
+  if (!abs || !names.length) return '';
+  const base = abs.split('/').pop() || '';
+  if (!names.includes(base)) return '';
+  // 路径必须落在某个插件包里 —— 这一步是「身份」判据，不是脚本名裸匹配：
+  // 别的项目里也有 roster.mjs / scope-amend.mjs，它们不在插件包里，不受影响。
+  const pkgRoot = findPluginPackageRoot(abs);
+  if (!pkgRoot) return '';                        // 不在任何插件包里 → 普通文件
+  const pkgName = readPluginPackageName(pkgRoot);
+  const ownName = String(o.packageName || '').trim();
+  if (ownName && pkgName && pkgName !== ownName) return '';   // 别的插件的包
+  return base;
 }
 
 // ── 私有记忆目录（成员自己的错题本与方法论）──────────────

@@ -56,19 +56,110 @@ const ok = (l, c, e = '') => { if (!c) fail++; console.log((c ? 'PASS ' : 'FAIL 
 // 免得「断言本身抛异常」把真正的红绿信息吃掉。
 const errs = (r) => JSON.stringify((r && r.errors) || []);
 
+// 故障注入的批次号：每条用例换一个批次号，额度随之归零
+// （否则上一条用例把 rename-eperm 的额度用光，下一条就注入不到）。
+let faultRunSeq = 0;
+
 function gate(payload, opts = {}) {
   // session_id 是「谁在写」的声明（D-49）：闸门拿它去台账查绑定，不靠载荷自称。
   const body = { session_id: opts.sessionId || PARENT, ...payload };
   const args = [path.join(PLUGIN_ROOT, 'scripts', 'lessons-gate.mjs')];
   if (opts.router) args.push('--router');
   args.push(JSON.stringify(body));
+  const env = { ...process.env, MINIMAX_PROJECT_DIR: PROJ, PLUGIN_DATA: DATA };
+  // 故障注入（D-59/D-60/D-61 的断言必须确定性 —— 见第 17 节的说明）。
+  // 只有显式传 opts.fault 才开；不传时环境里根本没有这两个变量 ⇒ 生产路径不变。
+  if (opts.fault) {
+    env.SAR_FAULT_INJECT = opts.fault;
+    env.SAR_FAULT_RUN = opts.faultRun || ('f02-run-' + (faultRunSeq++));
+  }
   const r = spawnSync('node', args, {
     encoding: 'utf8',
-    env: { ...process.env, MINIMAX_PROJECT_DIR: PROJ, PLUGIN_DATA: DATA }
+    env
   });
   let out;
   try { out = JSON.parse(r.stdout); } catch { out = { raw: r.stdout, err: r.stderr }; }
   return out;
+}
+
+// 异步版闸门（D-62 的行为断言要等锁，用同步版会把整个测试进程卡住）。
+function gateAsync(payload, opts = {}) {
+  const body = { session_id: opts.sessionId || PARENT, ...payload };
+  const args = [path.join(PLUGIN_ROOT, 'scripts', 'lessons-gate.mjs')];
+  if (opts.router) args.push('--router');
+  args.push(JSON.stringify(body));
+  return new Promise((resolve) => {
+    const child = spawn('node', args, {
+      encoding: 'utf8',
+      env: { ...process.env, MINIMAX_PROJECT_DIR: PROJ, PLUGIN_DATA: DATA }
+    });
+    let buf = '';
+    child.stdout.on('data', (c) => { buf += c; });
+    child.on('close', () => {
+      let out = null;
+      try { out = JSON.parse(buf); } catch { out = { raw: buf.slice(0, 200) }; }
+      resolve(out);
+    });
+  });
+}
+
+// ── 起跑号牌（并发断言的确定性来源）───────────────────────────
+// 为什么需要：旧口径的丢条目是**概率性**的 —— 写入方错峰起跑时，后起的进程
+// 读到的快照已经含前几条，就丢不了条目，断言会「碰巧绿」
+// （上一轮实测：同一个变异体一次跑出 2 条红、另一次 0 条红）。
+// 号牌把所有写入方卡在同一条起跑线上，号令一发同时冲 ——
+// 读快照的窗口必然重叠，旧口径必然丢条目 ⇒ 红了就是稳定红。
+//
+// 号牌脚本写在临时目录里（不进仓库）：它只是「等号 → 再调闸门」的一层壳。
+function makeBarrierRunner(dir, name) {
+  const p = path.join(dir, name + '.mjs');
+  fs.writeFileSync(p, [
+    "import fs from 'node:fs';",
+    "import { spawn } from 'node:child_process';",
+    "const [goFile, script, payload] = process.argv.slice(2);",
+    "process.stdout.write('READY\\n');",
+    "const t0 = Date.now();",
+    "while (!fs.existsSync(goFile)) {",
+    "  if (Date.now() - t0 > 120000) { process.stdout.write('TIMEOUT\\n'); process.exit(3); }",
+    "  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);",
+    "}",
+    "const child = spawn(process.execPath, [script, payload], { stdio: ['ignore', 'pipe', 'pipe'] });",
+    "let out = '';",
+    "child.stdout.on('data', (c) => { out += c; });",
+    "child.stderr.on('data', (c) => { out += c; });",
+    "child.on('close', () => { process.stdout.write(out); });"
+  ].join('\n'), 'utf8');
+  return p;
+}
+
+// 起跑一个「等号牌」写入方：ready 在号牌文件出现前兑现，done 在闸门退出后兑现。
+function spawnBarrier(runner, goFile, script, payload) {
+  let resolveReady;
+  const ready = new Promise((r) => { resolveReady = r; });
+  // 环境必须**显式**带上沙箱路径：不带的话闸门会按 cwd 定位项目目录
+  // （D-64 同族 —— 夹具漏传环境变量会写到真实项目里去）。
+  const child = spawn('node', [runner, goFile, script, payload], {
+    encoding: 'utf8',
+    env: { ...process.env, MINIMAX_PROJECT_DIR: PROJ, PLUGIN_DATA: DATA }
+  });
+  let buf = '';
+  let isReady = false;
+  child.stdout.on('data', (c) => {
+    buf += c;
+    if (!isReady && buf.indexOf('READY') !== -1) { isReady = true; resolveReady(); }
+  });
+  // stderr 也要收进来：子进程自己起不来时，只有 stderr 说得清原因
+  child.stderr.on('data', (c) => { buf += '[stderr]' + c; });
+  const done = new Promise((resolve) => {
+    child.on('close', () => {
+      if (!isReady) { isReady = true; resolveReady(); }   // 进程提前退出：别死等
+      let out = null;
+      const i = buf.indexOf('{');
+      if (i !== -1) { try { out = JSON.parse(buf.slice(i)); } catch { out = null; } }
+      resolve(out);
+    });
+  });
+  return { ready, done };
 }
 
 const GOOD = {
@@ -273,56 +364,88 @@ for (const [label, cause] of BLAME_CASES) {
 // 那样即使把写锁整个去掉，断言照样绿 —— 恒绿的断言等于没测。
 // 这里用异步 spawn 让 8 个进程真正同时起跑，再统计落盘条目数。
 {
-  // 并发数取 12、且跑 3 轮 —— 旧口径的丢条目是**概率性**的：
-  // 进程启动错峰时，后起的进程读到的快照已经含前几条，就丢不了条目，
-  // 断言会「碰巧绿」（变异检验实测：8 并发单轮时绿、红各出现过一次）。
-  // 12 个进程 × 3 轮 = 36 次写入机会，任何一轮丢条目即判红；
-  // 每轮用独立成员名，各轮互不干扰计数。
+  // 并发数取 12、且跑 3 轮 —— 每轮用独立成员名，各轮互不干扰计数。
   //
   // **并发数必须小于错题本条数上限（15）**：上限判定在锁内生效，
   // 并发数一旦追平上限，第 N 个写入必然被「已达上限」拒掉 ——
   // 那是**正确行为**不是缺陷（实测：16 并发时第 16 个稳定报上限）。
   // 改并发数前先看 MAX_RULES。
+  //
+  // 三个关键（缺一个，这条断言就废了）：
+  //  1) **必须真并发**：spawnSync 包在 Promise 里仍是串行，去掉写锁照样绿。
+  //  2) **必须同时起跑**（起跑号牌）：旧口径的丢条目是概率性的 ——
+  //     进程错峰起跑时后起的进程读到的快照已含前几条，就丢不了条目，
+  //     断言会「碰巧绿」（上一轮实测：同一变异体一次 2 红、另一次 0 红）。
+  //     号牌把大家卡在同一条起跑线上 ⇒ 读快照窗口必然重叠 ⇒ 红了就是稳定红。
+  //  3) **判据用不变量**（说成功的 == 落盘的），不用「条数 == 固定值」：
+  //     固定条数把「静默丢条目」与「明确失败」混成同一个红，而明确失败在
+  //     Windows 上偶发（杀毒软件占用文件）⇒ 断言会时敏。
+  //     不变量把两件事分开：静默丢 ⇒ 集合不相等（红）；明确失败 ⇒ 集合仍相等，
+  //     由「无明确失败」那条断言单独盯着。
   const N = 12;
   const ROUNDS = 3;
-  const run = (agent, i) => new Promise((resolve) => {
-    const child = spawn('node', [path.join(PLUGIN_ROOT, 'scripts', 'lessons-gate.mjs'),
-      JSON.stringify({ session_id: PARENT, agent, task: '并发' + i, type: '数据错误',
-        symptom: '现象' + i, cause: '根因' + i, rule: '必须回显口径' + i,
-        next_time: '派工时必须带口径' + i, occurrence: 'single' })], {
-      encoding: 'utf8',
-      env: { ...process.env, MINIMAX_PROJECT_DIR: PROJ, PLUGIN_DATA: DATA }
-    });
-    let buf = '';
-    child.stdout.on('data', (c) => { buf += c; });
-    child.on('close', () => {
-      let out = {};
-      try { out = JSON.parse(buf); } catch {}
-      resolve(out);
-    });
-  });
-  let reported = 0;
+  const GATE = path.join(PLUGIN_ROOT, 'scripts', 'lessons-gate.mjs');
+  const runner = makeBarrierRunner(tmp, 'd52-barrier');
+  // 标记带「号」字：'并发标记1号' 不是 '并发标记10号' 的子串（否则逐条核对会串）
+  const marker = (i) => '并发标记' + i + '号';
   let allReported = true;
-  let allCounted = true;
+  let invariantOk = true;
   let allPresent = true;
+  let totalOk = 0;
+  let totalFail = 0;
   let minEntries = Infinity;
+  const failReasons = [];
   for (let round = 0; round < ROUNDS; round++) {
     const agent = 'sa-concurrent-r' + round;
-    const results = await Promise.all(Array.from({ length: N }, (_, i) => run(agent, i)));
-    const okCount = results.filter((x) => x.ok === true).length;
-    reported += okCount;
-    if (okCount + results.filter((x) => x.ok === false).length !== N) allReported = false;
-    const raw = fs.readFileSync(path.join(PROJ, '.superagent', 'lessons', agent + '.md'), 'utf8');
+    const goFile = path.join(tmp, 'go-r' + round + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6) + '.flag');
+    const pend = [];
+    for (let i = 0; i < N; i++) {
+      const payload = { session_id: PARENT, agent, task: marker(i), type: '数据错误',
+        symptom: '现象' + i, cause: '根因' + i, rule: '必须回显口径' + i,
+        next_time: '派工时必须带口径' + i, occurrence: 'single' };
+      pend.push(spawnBarrier(runner, goFile, GATE, JSON.stringify(payload)));
+    }
+    await Promise.all(pend.map((p) => p.ready));    // 全部就位
+    fs.writeFileSync(goFile, 'go');                  // 号令一发，同时冲
+    const results = await Promise.all(pend.map((p) => p.done));
+    const okSet = new Set();
+    const failSet = new Set();
+    let ambiguous = 0;
+    results.forEach((o, i) => {
+      if (o && o.ok === true) okSet.add(i);
+      else if (o && o.ok === false) {
+        failSet.add(i);
+        failReasons.push(JSON.stringify(o.errors || o).slice(0, 160));
+      } else {
+        ambiguous++;
+        failReasons.push('无法判定成败：' + JSON.stringify(o).slice(0, 160));
+      }
+    });
+    totalOk += okSet.size;
+    totalFail += failSet.size;
+    if (ambiguous > 0 || okSet.size + failSet.size !== N) allReported = false;
+    // 文件不存在时**不要抛异常**：抛异常会让整个套件崩掉，
+    // 把后面所有断言的结果一起吞掉（看不出到底哪一条坏了）。
+    let raw = '';
+    try {
+      raw = fs.readFileSync(path.join(PROJ, '.superagent', 'lessons', agent + '.md'), 'utf8');
+    } catch {
+      failReasons.push('落盘文件不存在：' + agent + '.md');
+    }
     const entries = (raw.match(/^##\s+\d{4}-\d{2}-\d{2}\s+·/gm) || []).length;
     if (entries < minEntries) minEntries = entries;
-    if (entries !== N) allCounted = false;
-    // 逐条核对：不是「数对了但少了某几条」，而是每条都在
-    if (!Array.from({ length: N }, (_, i) => raw.includes('并发' + i)).every(Boolean)) allPresent = false;
+    const diskSet = new Set();
+    for (let i = 0; i < N; i++) if (raw.includes(marker(i))) diskSet.add(i);
+    // 不变量：说成功的集合 == 落盘的集合（一个不多、一个不少）
+    if (okSet.size !== diskSet.size || Array.from(okSet).some((i) => !diskSet.has(i))) invariantOk = false;
+    if (diskSet.size !== N) allPresent = false;
   }
-  ok('D-52 并发写入全部返回成功或明确失败（不谎报）', allReported, 'ok=' + reported);
-  ok('D-52 并发写入不丢条目（' + N + ' 次并发 × ' + ROUNDS + ' 轮 → 最少 ' + minEntries + ' 条）',
-    allCounted && minEntries === N, '最少落盘条目数=' + minEntries);
-  ok('D-52 并发写入的每一条都在文件里', allPresent, '');
+  const diag = 'ok=' + totalOk + ' 明确失败=' + totalFail + ' 最少落盘条目数=' + minEntries +
+    (failReasons.length ? ' 首条失败原因=' + failReasons[0] : '');
+  ok('D-52 并发写入全部返回成功或明确失败（不谎报）', allReported, diag);
+  ok('D-52 并发写入不丢条目（说成功的都真落盘：' + N + ' 并发 × ' + ROUNDS + ' 轮）', invariantOk, diag);
+  ok('D-52 并发写入的每一条都在文件里', allPresent, diag);
+  ok('D-52 并发写入无明确失败（每一次写入都真的落盘）', totalFail === 0, diag);
 }
 
 // ── 13. D-55：Router 私有账写入闸门 ──────────────────────────
@@ -461,6 +584,133 @@ const ROUTER_OK = {
   ok('D-50 三态措辞互不相同（不会都塌成同一句）',
     lNoFile !== lEmpty && lEmpty !== lOdd && lNoFile !== lOdd,
     JSON.stringify([lNoFile, lEmpty, lOdd]));
+}
+
+// ── 17. D-59 / D-60 / D-61 / D-62：Windows 并发写四缺陷的**专属**断言 ──
+//
+// 这一组是本轮新增的专属断言。上一轮这四条修复**没有自己的断言**：
+// 回退实现后回归一条都不红（独立验收 F-02 查实：D-59 / D-60 / D-62 回退后 0 红；
+// D-61 只靠 D-52 的并发断言间接暴露，且**时敏** —— 一次跑出 2 红、另一次 0 红）。
+//
+// 为什么用**故障注入**而不是撞概率：
+//   D-59（rename 报 EPERM）与 D-61（抢锁报 EPERM）在真实环境里是**偶发**的。
+//   靠真实并发去撞，撞到与否看运气 —— 断言就成了概率性的。
+//   所以 lessons.mjs 加了**仅测试可见**的故障注入钩子：
+//     SAR_FAULT_INJECT = 逗号分隔的 token（rename-eperm / lock-eperm / verify-fail）
+//     SAR_FAULT_RUN    = 批次号（变了就重新武装计数）
+//   默认关闭：不设 SAR_FAULT_INJECT 时钩子是 no-op，生产路径一个字节都不变。
+//   本节每条用例都**显式**传 fault + 批次号 —— 不传就没有注入。
+//
+// 每条断言都走**真实闸门**（lessons-gate.mjs 子进程），不是直接调内部函数：
+//   钩子装在 writeFileLocked / withFileLock 里，闸门走的就是这条路径。
+{
+  // ── D-59：Windows 上 rename 覆盖被占用文件报 EPERM ──
+  // 修法 = 重试。断言：注入一次 EPERM 后写入**仍然成功**，且条目**真的落盘**。
+  // 回退实现（只 rename 一次、不重试）⇒ 写入失败 ⇒ 这两条断言转红。
+  {
+    const agent = 'sa-d59-rename';
+    const r = gate({ ...GOOD, agent, task: 'D59 注入 EPERM' }, { fault: 'rename-eperm' });
+    ok('D-59 rename 遇 EPERM 会重试（写入不静默少条目）', r.ok === true, errs(r).slice(0, 200));
+    const p = path.join(PROJ, '.superagent', 'lessons', agent + '.md');
+    const raw = fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
+    ok('D-59 重试后条目真的落盘', raw.includes('D59 注入 EPERM'), raw.slice(-120));
+  }
+
+  // ── D-60：落盘回读校验失败未回滚 ⇒ 一次失败写入抹掉前序条目 ──
+  // 修法 = 回滚。断言：校验失败时判失败（不谎报），且**文件回到写入前的内容**
+  // —— 前序条目还在、新条目没落。
+  // 注入 verify-fail = 「另一个写入方用过期快照覆盖了文件」⇒ 校验必然失败，
+  // 且失败时文件里已不含前序条目（这正是 D-60 的后果）。
+  // 回退实现（不回滚）⇒ 文件停在被覆盖的状态 ⇒ 前序条目被抹掉 ⇒ 断言转红。
+  {
+    const agent = 'sa-d60-rollback';
+    const p = path.join(PROJ, '.superagent', 'lessons', agent + '.md');
+    const r0 = gate({ ...GOOD, agent, task: 'D60 存量条目' });
+    ok('D-60 前置：存量条目写入成功', r0.ok === true, errs(r0).slice(0, 160));
+    const before = fs.readFileSync(p, 'utf8');
+    const r1 = gate({ ...GOOD, agent, task: 'D60 新增条目' }, { fault: 'verify-fail' });
+    ok('D-60 回读校验失败时判失败（不谎报成功）', r1.ok === false, JSON.stringify(r1).slice(0, 200));
+    const after = fs.readFileSync(p, 'utf8');
+    ok('D-60 校验失败已回滚（前序条目未被这次失败写入抹掉）',
+      after === before && after.includes('D60 存量条目') && !after.includes('D60 新增条目'),
+      '写入前 ' + before.length + ' 字 / 写入后 ' + after.length + ' 字 / 仍含存量=' + after.includes('D60 存量条目'));
+  }
+
+  // ── D-61：Windows 抢锁报 EPERM 被误判成失败（锁本身是对的）──
+  // 修法 = EEXIST / EPERM 一律当「暂时拿不到」，继续等。
+  // 断言：注入一次抢锁 EPERM 后写入**仍然成功**（不误判失败），且条目真的落盘。
+  // 回退实现（只认 EEXIST）⇒ 报「获取写锁失败：EPERM」⇒ 断言转红。
+  {
+    const agent = 'sa-d61-lock';
+    const r = gate({ ...GOOD, agent, task: 'D61 抢锁 EPERM' }, { fault: 'lock-eperm' });
+    ok('D-61 抢锁遇 EPERM 当作「暂时拿不到」继续等（不误判失败）', r.ok === true, errs(r).slice(0, 200));
+    const p = path.join(PROJ, '.superagent', 'lessons', agent + '.md');
+    const raw = fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
+    ok('D-61 等到锁之后写入真的落盘', raw.includes('D61 抢锁 EPERM'), raw.slice(-120));
+  }
+
+  // ── D-62：锁等待超时（15s）短于持有者的重试窗口（8.8s）──
+  // 两条断言：一条**配置**（常量之间的关系，可验算）、一条**行为**（真排队）。
+  {
+    const mod = await import(pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lessons.mjs')).href);
+    const libMod = await import(pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib.mjs')).href);
+    // (1) 偷锁阈值必须**大于**等待超时：否则会把「还在用的锁」当陈旧锁偷走，
+    //     两个写入方同时进临界区。
+    ok('D-62 偷锁阈值 > 等待超时（不能把还在用的锁当陈旧锁偷走）',
+      mod.LOCK_STALE_MS > mod.LOCK_WAIT_TIMEOUT_MS,
+      '偷锁阈值=' + mod.LOCK_STALE_MS + 'ms 等待超时=' + mod.LOCK_WAIT_TIMEOUT_MS + 'ms');
+    // (2) 等待超时必须**长于**持有者一个临界区的最坏时长（rename 重试窗口 8.8s）：
+    //     否则持有者还在重试，排队方已经超时 → 排队方被误判成失败。
+    ok('D-62 等待超时 > 持有者最坏临界区（rename 重试窗口）',
+      mod.LOCK_WAIT_TIMEOUT_MS > mod.RENAME_RETRY_WINDOW_MS,
+      '等待超时=' + mod.LOCK_WAIT_TIMEOUT_MS + 'ms 重试窗口=' + mod.RENAME_RETRY_WINDOW_MS + 'ms');
+    // (3) 排队容忍度：编排层同时最多 MAX_ACTIVE_DISPATCHES(=6) 个派工在飞，
+    //     每个写入方的临界区最坏 RENAME_RETRY_WINDOW_MS ⇒ 等待超时要容得下这么多轮。
+    //     旧口径 15s：15000 < 6×8800=52800 ⇒ 只容得下 1 轮 ⇒ 第二个排队方即被误判失败。
+    const need = libMod.MAX_ACTIVE_DISPATCHES * mod.RENAME_RETRY_WINDOW_MS;
+    ok('D-62 等待超时应容得下编排层最大并发数（' + libMod.MAX_ACTIVE_DISPATCHES + '）轮持有者',
+      mod.LOCK_WAIT_TIMEOUT_MS >= need,
+      '等待超时=' + mod.LOCK_WAIT_TIMEOUT_MS + 'ms 需要>=' + need + 'ms');
+  }
+  {
+    // 行为断言：锁被别的写入方占着时，排队的一方必须**等**，不能被误判成失败。
+    // 持锁时长必须**大于旧口径的等待超时（15s）**，否则旧口径也会绿 ⇒ 断言没有区分力。
+    const HOLD_MS = 16000;
+    const agent = 'sa-d62-queue';
+    const target = path.join(PROJ, '.superagent', 'lessons', agent + '.md');
+    fs.writeFileSync(target, '# ' + agent + '\n', 'utf8');
+    // 持锁方：拿到锁后睡 HOLD_MS 再释放（子进程，不占本测试进程）
+    const holderScript = path.join(tmp, 'd62-holder.mjs');
+    fs.writeFileSync(holderScript, [
+      "import { withFileLock } from " + JSON.stringify(pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lessons.mjs')).href) + ";",
+      "const target = process.argv[2];",
+      "const holdMs = parseInt(process.argv[3] || '16000', 10);",
+      "const r = withFileLock(target, () => {",
+      "  process.stdout.write('HELD\\n');",
+      "  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, holdMs);",
+      "  return { ok: true };",
+      "}, { timeoutMs: 5000 });",
+      "process.stdout.write('DONE ' + JSON.stringify(r) + '\\n');"
+    ].join('\n'), 'utf8');
+    const holder = spawn('node', [holderScript, target, String(HOLD_MS)], { encoding: 'utf8' });
+    let hbuf = '';
+    holder.stderr.on('data', (c) => { hbuf += '[stderr]' + c; });
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('持锁方 10s 内没拿到锁：' + hbuf.slice(0, 120))), 10000);
+      holder.stdout.on('data', (c) => {
+        hbuf += c;
+        if (hbuf.indexOf('HELD') !== -1) { clearTimeout(timer); resolve(); }
+      });
+      holder.on('close', () => { clearTimeout(timer); reject(new Error('持锁方提前退出：' + hbuf.slice(0, 120))); });
+    });
+    const t0 = Date.now();
+    const r = await gateAsync({ ...GOOD, agent, task: 'D62 排队写入' });
+    const waited = Date.now() - t0;
+    ok('D-62 锁被占用时排队写入方不被误判失败', r && r.ok === true, JSON.stringify(r).slice(0, 200));
+    ok('D-62 排队写入方确实等到了锁释放（等 ' + waited + 'ms ≥ 持锁 ' + HOLD_MS + 'ms）',
+      waited >= HOLD_MS - 500, '实际等待=' + waited + 'ms');
+    try { holder.kill(); } catch { /* 已经退出了 */ }
+  }
 }
 
 console.log(fail === 0 ? '>>> LESSONS ALL PASS' : '>>> LESSONS FAILURES: ' + fail);

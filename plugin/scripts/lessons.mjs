@@ -370,20 +370,128 @@ function sleepSync(ms) {
   }
 }
 
+// ── 锁与 rename 的参数（导出：回归要能直接断言它们之间的关系）────
+//
+// 为什么导出成常量而不是写在函数体里：D-62 的正确性条件是**常量之间的关系**
+// （偷锁阈值 > 等待超时 > 持有者最坏临界区）。关系只写在注释里就只能「读起来对」，
+// 导出成常量才能被回归**验算** —— 少了断言，这些数字随时会被改小。
+export const LOCK_WAIT_TIMEOUT_MS = 60000;
+export const LOCK_STALE_MS = 180000;
+
+// rename 重试：次数与退避步长。窗口由这两个常量**算出**，不另写一份数字 ——
+// 另写一份就等于多了一个口径（同一个坑的另一个变体）。
+export const RENAME_MAX_ATTEMPTS = 40;
+export const RENAME_BACKOFF_BASE_MS = 25;
+export const RENAME_BACKOFF_STEP_MS = 10;
+// 持有者在一个临界区里最坏要待的时长：
+//   40 × 25ms + 10ms × (0+1+…+39) = 1000 + 7800 = 8800ms
+export const RENAME_RETRY_WINDOW_MS =
+  RENAME_MAX_ATTEMPTS * RENAME_BACKOFF_BASE_MS +
+  RENAME_BACKOFF_STEP_MS * (RENAME_MAX_ATTEMPTS * (RENAME_MAX_ATTEMPTS - 1) / 2);
+
+// ── 故障注入钩子（仅测试可见；默认关闭）──────────────────────
+//
+// 为什么要有它：D-59 / D-60 / D-61 都是 **Windows 上偶发**的文件系统错误
+// （rename 覆盖被占用文件报 EPERM、抢锁被拒报 EPERM、回读校验被并发覆盖）。
+// 靠真实并发去撞，撞到与否看运气 —— 上一轮的变异检验就是这么「时敏」的：
+// 同一个变异体一次跑出 2 条红、另一次跑出 0 条红。
+// 断言要确定性，就得能**指定**错误，而不是等它自己冒出来。
+//
+// 开关：环境变量 SAR_FAULT_INJECT（逗号分隔的 token）+ SAR_FAULT_RUN（批次号）。
+//   · 不设 SAR_FAULT_INJECT ⇒ 钩子**完全关闭**（见 faultSpec 的 null 短路）：
+//     不加 sleep、不改返回值、不改变正常路径的任何行为。
+//   · SAR_FAULT_RUN 变化 ⇒ 计数归零（同一组 token 在同一批次里只触发 N 次）。
+//     回归里每个用例用不同批次号，避免上一条用例把额度用光。
+//
+// 语义（每个 token 只影响对应的那一个系统调用，互不串扰）：
+//   rename-eperm[:N]  writeFileLocked 的 renameSync 前 N 次抛 EPERM
+//                     （Windows 上目标文件被占用时的真实错误码）。默认 N=1。
+//   lock-eperm[:N]    withFileLock 的 openSync(lock,'wx') 前 N 次抛 EPERM
+//                     （Windows ERROR_SHARING_VIOLATION 的 Node 映射）。默认 N=1。
+//   verify-fail       rename 成功后把目标文件改写成一份**过期快照**（不含前序条目），
+//                     模拟另一个写入方用旧快照覆盖 ⇒ 回读校验必然失败，
+//                     此时必须回滚，否则前序条目被这一次失败写入抹掉（D-60）。
+//
+// 生产路径的保证：三个 token 都不设时，钩子函数体只剩一次 env 比较；
+// 正常写入的时序、返回值与文件内容与「没有钩子」时逐字一致。
+const FAULT_ENV = 'SAR_FAULT_INJECT';
+const FAULT_RUN_ENV = 'SAR_FAULT_RUN';
+let FAULT_CACHE = { key: null, spec: null };
+
+function parseFaultSpec(raw) {
+  if (!raw) return null;
+  const spec = { renameEperm: 0, lockEperm: 0, verifyFail: false };
+  for (const tok of String(raw).split(',')) {
+    const t = tok.trim();
+    if (!t) continue;
+    const [name, arg] = t.split(':');
+    const n = arg === undefined ? 1 : parseInt(arg, 10);
+    const count = (Number.isFinite(n) && n > 0) ? n : 1;
+    if (name === 'rename-eperm') spec.renameEperm = count;
+    else if (name === 'lock-eperm') spec.lockEperm = count;
+    else if (name === 'verify-fail') spec.verifyFail = true;
+  }
+  return spec;
+}
+
+// 当前生效的故障规格。开关或批次号一变就重新解析（计数随之归零）。
+function faultSpec() {
+  const raw = process.env[FAULT_ENV];
+  const run = process.env[FAULT_RUN_ENV] || '';
+  const key = (raw || '') + '||' + run;
+  if (key === FAULT_CACHE.key) return FAULT_CACHE.spec;
+  const spec = parseFaultSpec(raw);
+  FAULT_CACHE = { key, spec };
+  return spec;
+}
+
+function faultError(code, message) {
+  const e = new Error(message);
+  e.code = code;
+  return e;
+}
+
+// rename 故障：只在开关指定 rename-eperm 且额度未用完时抛错。
+function faultRename() {
+  const spec = faultSpec();
+  if (!spec || spec.renameEperm <= 0) return;
+  spec.renameEperm--;
+  throw faultError('EPERM', '故障注入：rename 覆盖被占用文件（Windows EPERM）');
+}
+
+// 抢锁故障：模拟 Windows 上「锁文件已存在且正被别的进程打开」时的 EPERM。
+function faultLockOpen() {
+  const spec = faultSpec();
+  if (!spec || spec.lockEperm <= 0) return;
+  spec.lockEperm--;
+  throw faultError('EPERM', '故障注入：排他创建锁文件被拒（Windows ERROR_SHARING_VIOLATION）');
+}
+
+// 回读校验故障：模拟「另一个写入方用过期快照覆盖了文件」——
+// 校验必然失败，且失败时文件里已不含前序条目 ⇒ 必须回滚，否则前序条目被抹掉。
+function faultVerifyOverwrite(file) {
+  const spec = faultSpec();
+  if (!spec || !spec.verifyFail) return;
+  try {
+    fs.writeFileSync(file, '# 过期快照（故障注入：模拟并发写入方用旧快照覆盖）\n', 'utf8');
+  } catch { /* 注入失败就当没注入 */ }
+}
+
 export function withFileLock(file, fn, opts = {}) {
   const lock = lockFileFor(file);
-  // 等待超时 60s、偷锁阈值 180s：
+  // 等待超时 LOCK_WAIT_TIMEOUT_MS(60s)、偷锁阈值 LOCK_STALE_MS(180s)：
   // 拿不到锁就判失败（不放行、不强抢），但必须给持有者留够时间 ——
   // 持有者遇到 Windows rename EPERM 时会在临界区里重试最多 ~9s（见 writeFileLocked），
   // 16 个写入方排队时，最后一个要等 15 × 9s —— 15s 超时会把它们**误判成失败**。
   // 偷锁阈值必须**大于**等待超时，否则会把「还在用的锁」当成陈旧锁偷走，两个写入方同时进临界区。
-  const timeoutMs = opts.timeoutMs || 60000;
-  const staleMs = opts.staleMs || 180000;
+  const timeoutMs = opts.timeoutMs || LOCK_WAIT_TIMEOUT_MS;
+  const staleMs = opts.staleMs || LOCK_STALE_MS;
   const deadline = Date.now() + timeoutMs;
   try { fs.mkdirSync(LOCK_DIR, { recursive: true }); } catch { /* 目录建不出来时下面会报错 */ }
   let fd = null;
   for (;;) {
     try {
+      faultLockOpen();   // 故障注入（默认关闭；生产路径是 no-op）
       fd = fs.openSync(lock, 'wx');
       break;
     } catch (e) {
@@ -463,14 +571,16 @@ export function writeFileLocked(file, build) {
       try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
       return { ok: false, error: '写入临时文件失败：' + (e && e.message ? e.message : String(e)) };
     }
-    // 重试窗口：40 次 × (25ms + 10ms/次) ≈ 8.8s。
+    // 重试窗口：RENAME_MAX_ATTEMPTS(40) 次 × (25ms + 10ms/次) ≈ 8.8s
+    // （RENAME_RETRY_WINDOW_MS 由同一组常量算出，不另写一份数字）。
     // 为什么窗口要这么长：**Windows Defender / 索引服务会扫描刚写入的文件**，
     // 扫描期间目标文件被外部进程打开 → rename 覆盖报 EPERM。
     // 实测：全量回归刚跑完十几套、Defender 正在扫临时目录时，
     // 1.15s 的旧窗口不够用，会偶发写失败 —— 那一条记录**根本没落盘**。
     // Linux 上 rename 覆盖总是成功，所以这个坑只在 Windows 显形。
-    for (let attempt = 0; attempt < 40; attempt++) {
+    for (let attempt = 0; attempt < RENAME_MAX_ATTEMPTS; attempt++) {
       try {
+        faultRename();    // 故障注入（默认关闭；生产路径是 no-op）
         fs.renameSync(tmp, file);
         renamed = true;
         break;
@@ -479,13 +589,15 @@ export function writeFileLocked(file, build) {
         // EPERM/EBUSY = 目标文件正被占用（Windows 常见）；EACCES = 权限问题。
         const code = e && e.code;
         if (code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES') break;
-        sleepSync(25 + attempt * 10);
+        sleepSync(RENAME_BACKOFF_BASE_MS + attempt * RENAME_BACKOFF_STEP_MS);
       }
     }
     if (!renamed) {
       try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
       return { ok: false, error: '写入失败：' + (lastErr && lastErr.message ? lastErr.message : String(lastErr)) };
     }
+    // 故障注入：模拟「另一个写入方用过期快照覆盖了文件」（默认关闭；生产路径是 no-op）
+    faultVerifyOverwrite(file);
     let after = '';
     try { after = fs.readFileSync(file, 'utf8'); } catch { after = ''; }
     // 落盘后回读校验：不一致就判失败，不返回「成功」。

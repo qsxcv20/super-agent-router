@@ -15,6 +15,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const PLUGIN_ROOT = process.env.SAR_PLUGIN_ROOT ||
   'C:\\Users\\yang2\\.minimax\\plugins\\super-agent-router';
@@ -28,10 +29,10 @@ fs.writeFileSync(path.join(PROJ, 'src', 'app', 'login.ts'), 'x', 'utf8');
 let fail = 0;
 const ok = (l, c, e = '') => { if (!c) fail++; console.log((c ? 'PASS ' : 'FAIL ') + l + (e ? ' :: ' + e : '')); };
 
-function run(script, payload) {
+function run(script, payload, env) {
   const r = spawnSync('node', [path.join(PLUGIN_ROOT, 'scripts', script)], {
     input: JSON.stringify(payload), encoding: 'utf8', timeout: 10000,
-    env: { ...process.env, PLUGIN_ROOT, PLUGIN_DATA: DATA, MINIMAX_PROJECT_DIR: PROJ }
+    env: { ...process.env, PLUGIN_ROOT, PLUGIN_DATA: DATA, MINIMAX_PROJECT_DIR: PROJ, ...(env || {}) }
   });
   return (r.stdout || '').trim();
 }
@@ -168,6 +169,78 @@ function workerGuard(tool, payload, session, tr) {
   ok('glob 检索根在读放行目录树内放行', inRoot === '', inRoot.slice(0, 120));
   ok('glob 检索根在范围外被拦', outRoot.includes('deny'), outRoot.slice(0, 120));
   ok('grep 无 path 时按工作区根判定并被拦', noPath.includes('deny'), noPath.slice(0, 120));
+}
+
+
+// ── F-04：含空格的路径不再被静默截断 ────────────────────────
+//
+// 缺陷（独立验收 v055 F-04）：extractScopeDetail 按**空格**切 SCOPE 行，
+// 绝对路径里带空格时被切成两段（后半段被当成另一个条目丢掉），
+// 该白名单条目**静默不生效** —— 目标被判成越界。
+// 本仓库自己的路径就含空格（...\mini code的插件\），所以这不是理论问题。
+//
+// 修法：切分尊重路径里的空格 —— 先按逗号切；片段若被引号包住或以盘符开头，
+// 就**整体**算一个条目；否则才按空格切（口径写进契约 S2 第 7 条）。
+//
+// 四条断言：
+//   ① 含空格的绝对路径条目解析为一个完整条目（不截断）
+//   ② 该路径读写都按预期放行（白名单**真生效**，不是只验「解析出一个条目」）
+//   ③ 现有不带空格的写法不受影响
+//   ④ 既有口径不受影响（ro: 只读前缀 / 中文自然语言片段被丢弃）
+{
+  const SPACE_PROJ = path.join(tmp, 'my proj');       // 工作区路径带空格
+  fs.mkdirSync(path.join(SPACE_PROJ, 'src', 'app'), { recursive: true });
+  fs.writeFileSync(path.join(SPACE_PROJ, 'src', 'app', 'login.ts'), 'x', 'utf8');
+  const ABS = path.join(SPACE_PROJ, 'src', 'app', 'login.ts');
+
+  const lib = await import(pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib.mjs')).href);
+
+  // ① 解析成一个完整条目（不截断）
+  const detail = lib.extractScopeDetail('SCOPE: ' + ABS);
+  ok('F-04 含空格的绝对路径解析为一个完整条目',
+    detail.entries.length === 1 && detail.entries[0] === ABS, JSON.stringify(detail.entries));
+
+  // ② 白名单真生效：读写都放行（绝对路径与相对路径两种写法）
+  const W = 'worker-space';
+  const T = makeTranscript(W, 'router-space', 'worker', ABS);
+  const envSpace = { MINIMAX_PROJECT_DIR: SPACE_PROJ };
+  const readAbs = run('guard.mjs', {
+    hook_event_name: 'PreToolUse', tool_name: 'read', session_id: W,
+    agent_id: W, agent_type: 'worker', transcript_path: T,
+    tool_input: { path: ABS }
+  }, envSpace);
+  ok('F-04 含空格路径读放行（白名单真生效）', readAbs === '', readAbs.slice(0, 140));
+  const writeAbs = run('guard.mjs', {
+    hook_event_name: 'PreToolUse', tool_name: 'write', session_id: W,
+    agent_id: W, agent_type: 'worker', transcript_path: T,
+    tool_input: { file_path: ABS }
+  }, envSpace);
+  ok('F-04 含空格路径写放行（白名单真生效）', writeAbs === '', writeAbs.slice(0, 140));
+  const readRel = run('guard.mjs', {
+    hook_event_name: 'PreToolUse', tool_name: 'read', session_id: W,
+    agent_id: W, agent_type: 'worker', transcript_path: T,
+    tool_input: { path: 'src/app/login.ts' }
+  }, envSpace);
+  ok('F-04 含空格白名单对相对路径同样生效', readRel === '', readRel.slice(0, 140));
+
+  // ③ 不带空格的写法不受影响
+  const plain = lib.extractScopeDetail('SCOPE: src/app/login.ts');
+  ok('F-04 不带空格的写法不受影响',
+    plain.entries.length === 1 && plain.entries[0] === 'src/app/login.ts',
+    JSON.stringify(plain.entries));
+
+  // ④ 既有口径不受影响：ro: 只读前缀 / 中文自然语言片段
+  const ro = lib.extractScopeDetail('SCOPE: ro: src/app/, src/app/login.ts');
+  ok('F-04 ro: 只读前缀仍然生效',
+    ro.entries.length === 2 && ro.entries[0] === 'ro: src/app/' && ro.entries[1] === 'src/app/login.ts',
+    JSON.stringify(ro.entries));
+  const cjk = lib.extractScopeDetail('SCOPE: 请修改 src/app/login.ts 这个文件');
+  ok('F-04 中文自然语言片段仍被丢弃（不混进白名单）',
+    cjk.entries.length === 1 && cjk.entries[0] === 'src/app/login.ts',
+    JSON.stringify(cjk.entries));
+  const quoted = lib.extractScopeDetail('SCOPE: "' + ABS + '"');
+  ok('F-04 双引号包裹的含空格路径同样是一个完整条目',
+    quoted.entries.length === 1 && quoted.entries[0] === ABS, JSON.stringify(quoted.entries));
 }
 
 console.log(fail === 0 ? '>>> SCOPE ALL PASS' : '>>> SCOPE FAILURES: ' + fail);

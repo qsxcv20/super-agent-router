@@ -14,6 +14,8 @@
 //   8. D-13 向后兼容：历史履历（verified_by 不在台账里）仍能读出
 //   9. D-21：段首定位口径统一 —— 长前导文件里 20 条上限真的会触发、计数正确
 //   10. D-24：摘要取样不再按名录顺序截断，靠后的成员可见 + 省略者被披露
+//   11. D-52：并发写履历不丢条目（真并发 + 起跑号牌 + 不变量判据）
+//   12. D-59 / D-60：rename 重试与回读校验失败回滚（故障注入，专属断言）
 //
 // 每个用例用独立成员，避免用例之间互相污染记录池。
 import { spawn, spawnSync } from 'node:child_process';
@@ -82,16 +84,79 @@ const BASE_BINDINGS = [
 ];
 writeLedgerFull(BASE_DISPATCHES, BASE_BINDINGS);
 
+// 故障注入的批次号：每条用例换一个批次号，额度随之归零。
+let faultRunSeq = 0;
+
 function gate(payload, opts = {}) {
   // session_id = 「谁在写」的声明（D-49）：闸门拿它去台账查绑定，不靠载荷自称。
   const env = { ...process.env, MINIMAX_PROJECT_DIR: PROJ, PLUGIN_DATA: DATA };
   if (opts.noLedger) delete env.PLUGIN_DATA;
+  // 故障注入（D-59/D-60 的断言要确定性 —— 错误由用例指定，不靠真实并发去撞）。
+  // 不传 opts.fault 时环境里没有这两个变量 ⇒ 生产路径不变。
+  if (opts.fault) {
+    env.SAR_FAULT_INJECT = opts.fault;
+    env.SAR_FAULT_RUN = opts.faultRun || ('f02-rec-run-' + (faultRunSeq++));
+  }
   const body = { session_id: opts.sessionId || PARENT, ...payload };
   const r = spawnSync('node', [path.join(PLUGIN_ROOT, 'scripts', 'record-gate.mjs'), JSON.stringify(body)], {
     encoding: 'utf8',
     env
   });
   try { return JSON.parse(r.stdout); } catch { return { raw: r.stdout, err: r.stderr }; }
+}
+
+// ── 起跑号牌（并发断言的确定性来源）───────────────────────────
+// 为什么需要：旧口径的丢条目是**概率性**的 —— 写入方错峰起跑时，后起的进程
+// 读到的快照已经含前几条，就丢不了条目，断言会「碰巧绿」。
+// 号牌把所有写入方卡在同一条起跑线上，号令一发同时冲 ⇒ 红了就是稳定红。
+// 脚本写在临时目录里（不进仓库）：它只是「等号 → 再调闸门」的一层壳。
+function makeBarrierRunner(dir, name) {
+  const p = path.join(dir, name + '.mjs');
+  fs.writeFileSync(p, [
+    "import fs from 'node:fs';",
+    "import { spawn } from 'node:child_process';",
+    "const [goFile, script, payload] = process.argv.slice(2);",
+    "process.stdout.write('READY\\n');",
+    "const t0 = Date.now();",
+    "while (!fs.existsSync(goFile)) {",
+    "  if (Date.now() - t0 > 120000) { process.stdout.write('TIMEOUT\\n'); process.exit(3); }",
+    "  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);",
+    "}",
+    "const child = spawn(process.execPath, [script, payload], { stdio: ['ignore', 'pipe', 'pipe'] });",
+    "let out = '';",
+    "child.stdout.on('data', (c) => { out += c; });",
+    "child.stderr.on('data', (c) => { out += c; });",
+    "child.on('close', () => { process.stdout.write(out); });"
+  ].join('\n'), 'utf8');
+  return p;
+}
+
+// 起跑一个「等号牌」写入方：ready 在号牌文件出现前兑现，done 在闸门退出后兑现。
+function spawnBarrier(runner, goFile, script, payload) {
+  let resolveReady;
+  const ready = new Promise((r) => { resolveReady = r; });
+  // 环境必须**显式**带上沙箱路径：不带的话闸门会按 cwd 定位项目目录（D-64 同族）。
+  const child = spawn('node', [runner, goFile, script, payload], {
+    encoding: 'utf8',
+    env: { ...process.env, MINIMAX_PROJECT_DIR: PROJ, PLUGIN_DATA: DATA }
+  });
+  let buf = '';
+  let isReady = false;
+  child.stdout.on('data', (c) => {
+    buf += c;
+    if (!isReady && buf.indexOf('READY') !== -1) { isReady = true; resolveReady(); }
+  });
+  child.stderr.on('data', (c) => { buf += '[stderr]' + c; });
+  const done = new Promise((resolve) => {
+    child.on('close', () => {
+      if (!isReady) { isReady = true; resolveReady(); }   // 进程提前退出：别死等
+      let out = null;
+      const i = buf.indexOf('{');
+      if (i !== -1) { try { out = JSON.parse(buf.slice(i)); } catch { out = null; } }
+      resolve(out);
+    });
+  });
+  return { ready, done };
 }
 
 function makeMember(name) {
@@ -411,33 +476,30 @@ gate({ ...GOOD, agent: MATCH, task: '趋势对比图', approach: '折线加同�
 // 履历也是读-改-写整体覆盖：并发写会静默丢条目，且每次都返回 ok:true。
 // **必须真并发**：spawnSync 包在 Promise 里仍是串行，那样去掉写锁断言照样绿。
 {
-  // 并发数取 16、且跑 3 轮 —— 旧口径的丢条目是**概率性**的：
-  // 进程启动错峰时，后起的进程读到的快照已经含前几条，就丢不了条目，
-  // 断言会「碰巧绿」（变异检验实测：单轮 8 并发时绿、红各出现过一次）。
-  // 16 个进程 × 3 轮 = 48 次写入机会，任何一轮丢条目即判红；
-  // 每轮用独立成员名与方法论文件，各轮互不干扰计数。
+  // 并发数取 16、且跑 3 轮 —— 每轮用独立成员名与方法论文件，各轮互不干扰计数。
   // **并发数必须小于履历条数上限（20）**：上限判定在锁内生效，
   // 并发数一旦追平上限，第 N 个写入必然被「已达上限」拒掉 ——
   // 那是**正确行为**不是缺陷。改并发数前先看 MAX_RECORDS。
+  //
+  // 三个关键（缺一个，这条断言就废了）：
+  //  1) **必须真并发**：spawnSync 包在 Promise 里仍是串行，去掉写锁照样绿。
+  //  2) **必须同时起跑**（起跑号牌）：旧口径的丢条目是概率性的 ——
+  //     进程错峰起跑时后起的进程读到的快照已含前几条，就丢不了条目，
+  //     断言会「碰巧绿」。号牌把大家卡在同一条起跑线上 ⇒ 红了就是稳定红。
+  //  3) **判据用不变量**（说成功的 == 落盘的），不用「条数 == 固定值」：
+  //     固定条数把「静默丢条目」与「明确失败」混成同一个红，而明确失败在
+  //     Windows 上偶发（杀毒软件占用文件）⇒ 断言会时敏。
   const N = 16;
   const ROUNDS = 3;
-  const run = (agent, i) => new Promise((resolve) => {
-    const child = spawn('node', [path.join(PLUGIN_ROOT, 'scripts', 'record-gate.mjs'),
-      JSON.stringify({ session_id: PARENT, agent, task: '并发' + i, domain: '并发领域',
-        approach: '做法' + i, evidence: '证据' + i, verified_by: 'verifier' })], {
-      encoding: 'utf8',
-      env: { ...process.env, MINIMAX_PROJECT_DIR: PROJ, PLUGIN_DATA: DATA }
-    });
-    let buf = '';
-    child.stdout.on('data', (c) => { buf += c; });
-    child.on('close', () => {
-      let out = {};
-      try { out = JSON.parse(buf); } catch {}
-      resolve(out);
-    });
-  });
-  let allCounted = true;
+  const GATE = path.join(PLUGIN_ROOT, 'scripts', 'record-gate.mjs');
+  const runner = makeBarrierRunner(tmp, 'd52-records-barrier');
+  // 标记带「号」字：'并发标记1号' 不是 '并发标记10号' 的子串（否则逐条核对会串）
+  const marker = (i) => '并发标记' + i + '号';
+  let allReported = true;
+  let invariantOk = true;
   let allPresent = true;
+  let totalOk = 0;
+  let totalFail = 0;
   let minCnt = Infinity;
   // 诊断用：把**明确失败**（ok:false）的原因收集起来。
   // 为什么必须分开看：D-52 的要害是**静默丢失**（返回 ok 却没落盘）。
@@ -446,27 +508,52 @@ gate({ ...GOOD, agent: MATCH, task: '趋势对比图', approach: '折线加同�
   const failures = [];
   for (let round = 0; round < ROUNDS; round++) {
     const agent = 'sa-concurrent-records-r' + round;
-    fs.writeFileSync(path.join(PROJ, '.superagent', 'methods', agent + '.md'),
-      '# ' + agent + '\n\n## 实战记录\n\n', 'utf8');
-    const outs = await Promise.all(Array.from({ length: N }, (_, i) => run(agent, i)));
-    for (const o of outs) {
-      if (o.ok !== true) failures.push(JSON.stringify(o.errors || o).slice(0, 200));
+    const file = path.join(PROJ, '.superagent', 'methods', agent + '.md');
+    fs.writeFileSync(file, '# ' + agent + '\n\n## 实战记录\n\n', 'utf8');
+    const goFile = path.join(tmp, 'go-rec-r' + round + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6) + '.flag');
+    const pend = [];
+    for (let i = 0; i < N; i++) {
+      const payload = { session_id: PARENT, agent, task: marker(i), domain: '并发领域',
+        approach: '做法' + i, evidence: '证据' + i, verified_by: 'verifier' };
+      pend.push(spawnBarrier(runner, goFile, GATE, JSON.stringify(payload)));
     }
-    const raw = fs.readFileSync(path.join(PROJ, '.superagent', 'methods', agent + '.md'), 'utf8');
+    await Promise.all(pend.map((p) => p.ready));    // 全部就位
+    fs.writeFileSync(goFile, 'go');                  // 号令一发，同时冲
+    const outs = await Promise.all(pend.map((p) => p.done));
+    const okSet = new Set();
+    const failSet = new Set();
+    let ambiguous = 0;
+    outs.forEach((o, i) => {
+      if (o && o.ok === true) okSet.add(i);
+      else if (o && o.ok === false) {
+        failSet.add(i);
+        failures.push(JSON.stringify(o.errors || o).slice(0, 200));
+      } else {
+        ambiguous++;
+        failures.push('无法判定成败：' + JSON.stringify(o).slice(0, 200));
+      }
+    });
+    totalOk += okSet.size;
+    totalFail += failSet.size;
+    if (ambiguous > 0 || okSet.size + failSet.size !== N) allReported = false;
+    let raw = '';
+    try { raw = fs.readFileSync(file, 'utf8'); } catch { failures.push('落盘文件不存在：' + agent + '.md'); }
     const cnt = (raw.match(/^###\s/gm) || []).length;
     if (cnt < minCnt) minCnt = cnt;
-    if (cnt !== N) allCounted = false;
-    if (!Array.from({ length: N }, (_, i) => raw.includes('并发' + i)).every(Boolean)) allPresent = false;
+    const diskSet = new Set();
+    for (let i = 0; i < N; i++) if (raw.includes(marker(i))) diskSet.add(i);
+    // 不变量：说成功的集合 == 落盘的集合（一个不多、一个不少）
+    if (okSet.size !== diskSet.size || Array.from(okSet).some((i) => !diskSet.has(i))) invariantOk = false;
+    if (diskSet.size !== N) allPresent = false;
   }
-  const diag = '最少落盘条数=' + minCnt + ' 明确失败=' + failures.length +
+  const diag = 'ok=' + totalOk + ' 最少落盘条数=' + minCnt + ' 明确失败=' + totalFail +
     (failures.length ? ' 首条失败原因=' + failures[0] : '');
-  ok('D-52 并发写履历不丢条目（' + N + ' 次 × ' + ROUNDS + ' 轮 → 最少 ' + minCnt + ' 条）',
-    allCounted && minCnt === N, diag);
+  ok('D-52 并发写履历不丢条目（说成功的都真落盘：' + N + ' 并发 × ' + ROUNDS + ' 轮）', invariantOk, diag);
   ok('D-52 并发写履历逐条都在', allPresent, diag);
   // 明确失败也要被看见：写入方返回了 ok:false，说明它知道自己没记上 ——
   // 这是「不谎报」，但它**不是**「写成功」。把失败数报出来，避免「绿」掩盖了它。
-  ok('D-52 并发写履历无明确失败（每一次写入都真的落盘）',
-    failures.length === 0, diag);
+  ok('D-52 并发写履历无明确失败（每一次写入都真的落盘）', totalFail === 0, diag);
+  ok('D-52 并发写履历全部返回成功或明确失败（不谎报）', allReported, diag);
 }
 
 // ── 20. D-56 / D-57：取样名额单一常量 + 名录重名去重 ────────
@@ -500,6 +587,38 @@ gate({ ...GOOD, agent: MATCH, task: '趋势对比图', approach: '折线加同�
   ok('D-57 重名异常被显式报出（不静默去重）',
     Array.isArray(detail.duplicateNames) && detail.duplicateNames.includes('sa-dup'),
     JSON.stringify(detail.duplicateNames));
+}
+
+// ── 21. D-59 / D-60：履历侧的同款专属断言 ──────────────────
+// 这两条的实现在 lessons.mjs 的 writeFileLocked（错题本与履历共用）——
+// 这里再钉两条，证明「修的是共享代码」，不是只修了错题本那一侧。
+// 故障注入钩子（SAR_FAULT_INJECT / SAR_FAULT_RUN，默认关闭）见 lessons.mjs 注释。
+{
+  // D-59：Windows 上 rename 覆盖被占用文件报 EPERM ⇒ 重试 ⇒ 履历写入仍然成功
+  {
+    const AGENT = 'sa-d59-records';
+    makeMember(AGENT);
+    const r = gate({ ...GOOD, agent: AGENT, task: 'D59 注入 EPERM' }, { fault: 'rename-eperm' });
+    ok('D-59 履历侧 rename 遇 EPERM 会重试（写入不静默少条目）', r.ok === true, errs(r).slice(0, 200));
+    const raw = fs.readFileSync(path.join(PROJ, '.superagent', 'methods', AGENT + '.md'), 'utf8');
+    ok('D-59 履历侧重试后条目真的落盘', raw.includes('D59 注入 EPERM'), raw.slice(-120));
+  }
+  // D-60：落盘回读校验失败 ⇒ 回滚 ⇒ 前序履历还在（没被这次失败写入抹掉）
+  {
+    const AGENT = 'sa-d60-records';
+    makeMember(AGENT);
+    const p = path.join(PROJ, '.superagent', 'methods', AGENT + '.md');
+    const r0 = gate({ ...GOOD, agent: AGENT, task: 'D60 存量履历' });
+    ok('D-60 履历侧前置：存量履历写入成功', r0.ok === true, errs(r0).slice(0, 160));
+    const before = fs.readFileSync(p, 'utf8');
+    // verify-fail = 「另一个写入方用过期快照覆盖了文件」⇒ 校验必然失败
+    const r1 = gate({ ...GOOD, agent: AGENT, task: 'D60 新增履历' }, { fault: 'verify-fail' });
+    ok('D-60 履历侧回读校验失败时判失败（不谎报成功）', r1.ok === false, JSON.stringify(r1).slice(0, 200));
+    const after = fs.readFileSync(p, 'utf8');
+    ok('D-60 履历侧校验失败已回滚（前序履历未被这次失败写入抹掉）',
+      after === before && after.includes('D60 存量履历') && !after.includes('D60 新增履历'),
+      '写入前 ' + before.length + ' 字 / 写入后 ' + after.length + ' 字');
+  }
 }
 
 console.log(fail === 0 ? '>>> RECORDS ALL PASS' : '>>> RECORDS FAILURES: ' + fail);

@@ -183,9 +183,20 @@ if (active.length >= MAX_ACTIVE_DISPATCHES) {
     '先收拢已完成的任务再派新的 —— 如果确实需要更多并行，先把任务拆细、明确各自边界。');
 }
 const total = dispatchedTotal(ledger, sid);
-if (total >= MAX_TOTAL_DISPATCHES) {
+// 累计上限默认是硬编码的 30（D-65）。
+//
+// 为什么留一个**管理员可调的口子**：这个上限的作用是拦住「撒网式派工」，
+// 不是拦住「一轮做完又要做下一轮」的正常节奏。上限一旦写死，父会话在长轮次里
+// 会被自己的历史锁死 —— 而新开一个父会话往往不在人的控制范围内（桌面端一轮对话
+// 就是一次会话）。管理员要能**显式、留痕**地抬高它，而不是让机制自己悄悄失效。
+//
+// 口径：台账顶层的 limits.max_total_dispatches 存在且为正数时用它，否则用默认值；
+// 抬高这件事本身由管理员在台账里落笔（台账本身就是留痕），并在提示里写明当前用的是哪个值。
+const adminCap = Number(((ledger.limits || {}).max_total_dispatches) || 0);
+const totalCap = adminCap > 0 ? adminCap : MAX_TOTAL_DISPATCHES;
+if (total >= totalCap) {
   deny('[super-agent-router] 派工超限：本会话累计派工已达 ' + total +
-    ' 个（上限 ' + MAX_TOTAL_DISPATCHES + '）。' +
+    ' 个（上限 ' + totalCap + (adminCap > 0 ? '，管理员已显式抬高（D-65）' : '') + '）。' +
     '一个会话的组队规模应该收敛；新的任务组请开新会话。');
 }
 

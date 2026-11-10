@@ -14,7 +14,7 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const PLUGIN_ROOT = process.env.SAR_PLUGIN_ROOT ||
   'C:\\Users\\yang2\\.minimax\\plugins\\super-agent-router';
@@ -66,10 +66,10 @@ function makeCodexTranscript(session, parent, agent, scope) {
   return p;
 }
 
-function guard(payload) {
+function guard(payload, env) {
   const r = spawnSync('node', [path.join(PLUGIN_ROOT, 'scripts', 'guard.mjs')], {
     input: JSON.stringify(payload), encoding: 'utf8', timeout: 10000,
-    env: { ...process.env, PLUGIN_ROOT, MINIMAX_PROJECT_DIR: PROJ, PLUGIN_DATA: DATA }
+    env: { ...process.env, PLUGIN_ROOT, MINIMAX_PROJECT_DIR: PROJ, PLUGIN_DATA: DATA, ...(env || {}) }
   });
   return (r.stdout || '').trim();
 }
@@ -840,6 +840,148 @@ ok('glob 显式 path 在读放行目录树内放行', w('glob', { pattern: '**/*
     !out3.includes('权威面脚本'), out3.slice(0, 220));
   ok('③ 工作区里的同名副本照常按 scope 判定放行',
     out3 === '', out3.slice(0, 220));
+}
+
+// ── F-01：权威面脚本的归属判据 = 插件包身份 ────────────────
+//
+// 缺陷（独立验收 v055 F-01）：上一轮把「权威面脚本」锚在**运行中 guard 自己所在的
+// 那一份**（由 process.argv[1] 反推插件根）—— 于是只拦得住缓存树/安装目录里的那几份，
+// **仓库副本** plugin/scripts/scope-amend.mjs 完全不在锚点内。
+// 后果：SCOPE 覆盖 plugin/scripts/ 的 worker 执行仓库副本的 --tier full →
+// 整条提权链跑通（名录里等级变 full、变更账写下假批准人、下一次派工即按 full 生效）。
+//
+// 上一轮的口径「工作区里的同名副本是普通文件，不误拦」**是错的**：
+// 那份副本跑起来做的是同一件事（读同一个名录、写同一个变更账）。
+//
+// 修法：归属判据改成**插件包身份** —— 一个文件属于本插件包，
+// 当且仅当它所在目录树里有 .minimax-plugin/plugin.json 且包名与本插件一致。
+// 仓库 plugin/、安装目录 ~/.minimax/plugins/super-agent-router、
+// 运行时缓存树 sha256-tree-v1-* 都满足这一条。
+//
+// 四条断言必须能区分改前改后：
+//   ① worker 执行**另一份副本**的权威面脚本 → deny（--tier 与 --grant 两种形态各一条）
+//   ② 父会话执行同一脚本 → 不被这条规则拦
+//   ③ 无关项目里的同名文件（不在任何插件包目录树下）→ 不误拦
+//   ④ 家目录四种写法（~ / $HOME / %USERPROFILE% / $env:USERPROFILE%）都拦得住
+{
+  // 造一份「另一份副本」：同样是插件包（.minimax-plugin/plugin.json），但不是运行中那一份。
+  // 这一条正是上一轮漏掉的那一路 —— 运行中的 guard 属于哪一份，与目标属于哪一份无关。
+  const PKG_B = path.join(tmp, 'pkgB');
+  fs.mkdirSync(path.join(PKG_B, '.minimax-plugin'), { recursive: true });
+  fs.mkdirSync(path.join(PKG_B, 'scripts'), { recursive: true });
+  fs.copyFileSync(path.join(PLUGIN_ROOT, '.minimax-plugin', 'plugin.json'),
+    path.join(PKG_B, '.minimax-plugin', 'plugin.json'));
+  for (const n of ['scope-amend.mjs', 'roster.mjs']) {
+    fs.copyFileSync(path.join(PLUGIN_ROOT, 'scripts', n), path.join(PKG_B, 'scripts', n));
+  }
+
+  // 无关项目里的同名文件：不在任何插件包目录树下 → 必须是普通文件
+  const OTHER = path.join(tmp, 'other-project', 'tools');
+  fs.mkdirSync(OTHER, { recursive: true });
+  fs.copyFileSync(path.join(PLUGIN_ROOT, 'scripts', 'roster.mjs'), path.join(OTHER, 'roster.mjs'));
+
+  // 假家目录：家目录四种写法的展开目标（不依赖本机是否装了本插件，换台机器结论一样）
+  const FAKE_HOME = path.join(tmp, 'home');
+  const HOME_PKG = path.join(FAKE_HOME, '.minimax', 'plugins', 'super-agent-router');
+  fs.mkdirSync(path.join(HOME_PKG, '.minimax-plugin'), { recursive: true });
+  fs.mkdirSync(path.join(HOME_PKG, 'scripts'), { recursive: true });
+  fs.copyFileSync(path.join(PLUGIN_ROOT, '.minimax-plugin', 'plugin.json'),
+    path.join(HOME_PKG, '.minimax-plugin', 'plugin.json'));
+  fs.copyFileSync(path.join(PLUGIN_ROOT, 'scripts', 'scope-amend.mjs'),
+    path.join(HOME_PKG, 'scripts', 'scope-amend.mjs'));
+
+  const TIER_CMD = 'node "' + path.join(PKG_B, 'scripts', 'scope-amend.mjs') +
+    '" --tier full --agent worker --approver router-f01';
+  const GRANT_CMD = 'node "' + path.join(PKG_B, 'scripts', 'scope-amend.mjs') +
+    '" --grant req_abc --approver router-f01';
+
+  // ①-a worker 执行另一份副本的 --tier full → deny
+  {
+    const S = 'worker-f01-tier';
+    const TRx = makeTranscript(S, 'router-f01', 'worker', path.join(PKG_B, 'scripts') + '/');
+    const out = guard({
+      hook_event_name: 'PreToolUse', tool_name: 'bash', session_id: S,
+      agent_id: S, agent_type: 'worker', transcript_path: TRx,
+      tool_input: { command: TIER_CMD }
+    });
+    ok('①-a worker 执行另一份副本的权威面脚本（--tier）被拒（F-01）',
+      out.includes('deny') && out.includes('权威面脚本'), out.slice(0, 200));
+  }
+  // ①-b worker 执行另一份副本的 --grant → deny
+  {
+    const S = 'worker-f01-grant';
+    const TRx = makeTranscript(S, 'router-f01', 'worker', path.join(PKG_B, 'scripts') + '/');
+    const out = guard({
+      hook_event_name: 'PreToolUse', tool_name: 'bash', session_id: S,
+      agent_id: S, agent_type: 'worker', transcript_path: TRx,
+      tool_input: { command: GRANT_CMD }
+    });
+    ok('①-b worker 执行另一份副本的权威面脚本（--grant）被拒（F-01）',
+      out.includes('deny') && out.includes('权威面脚本'), out.slice(0, 200));
+  }
+  // ② 父会话执行同一脚本 → 不被这条规则拦
+  {
+    const out = guard({
+      hook_event_name: 'PreToolUse', tool_name: 'bash', session_id: 'router-f01',
+      tool_input: { command: TIER_CMD }
+    });
+    ok('② 父会话执行另一份副本的权威面脚本不被这条规则拦（F-01）',
+      !out.includes('权威面脚本'), out.slice(0, 200));
+  }
+  // ③ 无关项目里的同名文件 → 不误拦
+  {
+    const S = 'worker-f01-other';
+    const otherFile = path.join(OTHER, 'roster.mjs');
+    const TRx = makeTranscript(S, 'router-f01', 'worker', otherFile);
+    const out = guard({
+      hook_event_name: 'PreToolUse', tool_name: 'bash', session_id: S,
+      agent_id: S, agent_type: 'worker', transcript_path: TRx,
+      tool_input: { command: 'node "' + otherFile + '" --list' }
+    });
+    ok('③ 无关项目里的同名文件不被这条规则误拦（F-01）',
+      !out.includes('权威面脚本'), out.slice(0, 200));
+    ok('③ 无关项目里的同名文件照常按 scope 判定放行（F-01）',
+      out === '', out.slice(0, 200));
+  }
+  // ④ 家目录四种写法 → 都拦得住
+  for (const pre of ['~', '$HOME', '%USERPROFILE%', '$env:USERPROFILE%']) {
+    const S = 'worker-f01-home-' + pre.replace(/[^A-Za-z]/g, '');
+    const TRx = makeTranscript(S, 'router-f01', 'worker', path.join(HOME_PKG, 'scripts') + '/');
+    const out = guard({
+      hook_event_name: 'PreToolUse', tool_name: 'bash', session_id: S,
+      agent_id: S, agent_type: 'worker', transcript_path: TRx,
+      tool_input: {
+        command: 'node "' + pre + '/.minimax/plugins/super-agent-router/scripts/scope-amend.mjs"' +
+          ' --tier full --agent worker --approver router-f01'
+      }
+    }, { HOME: FAKE_HOME, USERPROFILE: FAKE_HOME });
+    ok('④ 家目录写法 ' + pre + ' 被拦（F-01）',
+      out.includes('deny') && out.includes('权威面脚本'), out.slice(0, 200));
+  }
+  // ④-补：家目录**展开本身**要能单独断言。
+  //
+  // 为什么必须单独断言：上面那四条只证明「命令被拒」，不证明「拒的是家目录展开这一环」——
+  // 换成别的分支命中也会让它们变绿。展开是判定的一环（换个写法就躲开 = 判定落空），
+  // 必须能被单独验。
+  {
+    const lib = await import(pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib.mjs')).href);
+    const want = FAKE_HOME.replace(/\\/g, '/') + '/.minimax/plugins/x';
+    const seen = [];
+    let allOk = true;
+    // 旧版本没有这个导出 —— 判失败，不抛异常（抛异常会让整份回归中断在���里，
+    // 「改前红」就看不到这一条了）。
+    if (typeof lib.expandHomePath !== 'function') {
+      ok('④-补 家目录四种写法都展开到真实家目录（F-01）', false,
+        'lib.mjs 没有导出 expandHomePath');
+    } else {
+      for (const pre of ['~', '$HOME', '%USERPROFILE%', '$env:USERPROFILE%']) {
+        const got = lib.expandHomePath(pre + '/.minimax/plugins/x', FAKE_HOME);
+        seen.push(pre + ' -> ' + got);
+        if (got !== want) allOk = false;
+      }
+      ok('④-补 家目录四种写法都展开到真实家目录（F-01）', allOk, seen.join(' | '));
+    }
+  }
 }
 
 // ── D-58：护栏第二道防线按**形态**判 ─────────────────────

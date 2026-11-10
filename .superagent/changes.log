@@ -14,3 +14,7 @@
 2026-11-10T09:43:10.203Z | scope | dsp_mwagd5eq_vtjkwk | deny req_mwahg3ih_5sifbg | by mvs_9bdda202ae274c909a5b4352fc45a471 | 该专项已交付完毕，此请求作废（留痕里已有该专项的沙箱账核对结论，不需要再读项目变更账）。
 2026-11-10T09:43:10.740Z | scope | dsp_mwahmje8_jquprp | deny req_mwahujqf_hdbnmy | by mvs_9bdda202ae274c909a5b4352fc45a471 | bash 是写通道：批这条等于给安装副本可写权限（worker 可覆盖已部署插件），风险与请求不对等。安装副本一致性由父会话在部署后统一做三副本 sha256 核对；确需读某个具体文件请用 read 工具（父会话已批只读条目 ro: C:\Users\yang2\.minimax\plugins\super-agent-router\scripts\）。
 2026-11-10T10:20:29.528Z | scope | dsp_mwaiymac_wmd8sb | deny req_mwajf06h_m8pzco | by mvs_9bdda202ae274c909a5b4352fc45a471 | release 自洽性探针误触发（命令文本里的正则片段被当成路径），非真实需求
+2026-11-10T11:17:21.131Z | scope | dsp_mwahmje8_jquprp | deny req_mwaicyyt_umff81 | by mvs_9bdda202ae274c909a5b4352fc45a471 | 私有记忆隔离：_router.md 是编排层自己的错题本，成员不得读别人的私有记忆（D-31/D-42）；该专项已交付，此请求作废。
+2026-11-10T11:17:21.786Z | scope | dsp_mwaiymac_wmd8sb | deny req_mwajhmis_4v5e2u | by mvs_9bdda202ae274c909a5b4352fc45a471 | 编排层私有状态目录不开放写授权（契约 S13.3 第一条例外）—— 该专项已交付，此请求作废；本轮所有批准/提权都落在沙箱账里。
+2026-11-10T11:17:22.420Z | scope | dsp_mwahmje8_jquprp | deny req_mwajue95_1f7oda | by mvs_9bdda202ae274c909a5b4352fc45a471 | 编排层私有状态目录不开放写授权（契约 S13.3 第一条例外）—— 该专项已交付，此请求作废；本轮所有批准/提权都落在沙箱账里。
+2026-11-10T11:17:42.934Z | scope | dsp_mwalhxky_jo7zbh | grant req_mwali7f2_hfgg9r | by mvs_9bdda202ae274c909a5b4352fc45a471 | + ro: .
