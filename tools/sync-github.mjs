@@ -92,9 +92,15 @@ const baseCommit = api('/repos/' + OWNER + '/' + REPO_NAME + '/git/commits/' + b
 const baseTree = baseCommit.json.tree.sha;
 
 // 3. blob
+//
+// 内容必须取**提交里的 blob**，不能读工作区文件：
+// git 在 add 时会按 .gitattributes / autocrlf 把 CRLF 归一成 LF 存进提交，
+// 工作区那份可能仍是 CRLF —— 直接上传工作区字节，远端 blob 就与提交 blob 不一致
+// （实测过一次：verification-v050.md 远端 sha 与 HEAD sha 不同，内容等价但行尾不同）。
+// 用 git cat-file blob 取的是提交里的原始字节，与 git blob sha 天然对齐。
 const entries = [];
 for (const rel of files) {
-  const b64 = fs.readFileSync(path.join(WS, rel)).toString('base64');
+  const b64 = spawnSync('git', ['cat-file', 'blob', 'HEAD:' + rel], { cwd: WS, maxBuffer: 64 * 1024 * 1024 }).stdout.toString('base64');
   const r = api('/repos/' + OWNER + '/' + REPO_NAME + '/git/blobs', 'POST', { content: b64, encoding: 'base64' });
   if (r.status !== 201) { console.error('blob 失败 ' + rel + ': ' + (r.json && r.json.message)); process.exit(1); }
   entries.push({ path: rel, mode: '100644', type: 'blob', sha: r.json.sha });
