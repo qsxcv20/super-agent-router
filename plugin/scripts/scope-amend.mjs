@@ -46,7 +46,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 import {
-  readLedger, writeLedger, grantScopeRequest, denyScopeRequest, READONLY_PREFIX,
+  readLedger, updateLedger, grantScopeRequest, denyScopeRequest, READONLY_PREFIX,
   detectReadonlyUpgrades,
   readRoster, projectRoot, TIER_FULL, TIER_SCOPED, isPrivateMemoryPath
 } from './lib.mjs';
@@ -167,10 +167,16 @@ if (parsed.grant || parsed.deny) {
         '范围层对私有记忆路径一律不授予（契约 S13.4），只有「成员自己那份」的精确文件通道例外。' +
         '需要它的内容，请让 Router 转写进 brief（契约通道），不要走扩权。');
     }
-    const r = grantScopeRequest(ledger, id, approver);
-    if (!r.ok) fail(r.error);
-    const okWrite = writeLedger(ledger);
-    if (!okWrite) fail('批准结果写回台账失败 —— 扩权可能没有生效');
+    // 批准写回走统一写入口（D-77）：整个「读-改-写」串行化 ——
+    // 否则与并发批准/并发派工相撞时，后写的会把对方的改动整条覆盖掉（静默丢记录）。
+    const gres = updateLedger((cur) => {
+      const rr = grantScopeRequest(cur, id, approver);
+      if (!rr.ok) return { deny: rr.error };
+      return { result: rr };
+    });
+    if (!gres.ok) fail('批准结果写回台账失败 —— 扩权可能没有生效（' + gres.code + '）：' + gres.error);
+    if (gres.deny) fail(gres.deny);
+    const r = gres.result;
     // D-75：这次批准可能把某条路径从**只读条目**升级成了**可写条目**。
     // 口径（父会话已定）：升级能力**保留**（管理员批准即授权升级），
     // 但升级必须**显式** —— 回执与变更账都要写明「哪个路径从哪个只读条目升级而来」。
@@ -216,9 +222,13 @@ if (parsed.grant || parsed.deny) {
     }, null, 2) + '\n');
     process.exit(0);
   }
-  const r = denyScopeRequest(ledger, id, approver, parsed.reason || '');
-  if (!r.ok) fail(r.error);
-  if (!writeLedger(ledger)) fail('拒绝结果写回台账失败');
+  const dres = updateLedger((cur) => {
+    const rr = denyScopeRequest(cur, id, approver, parsed.reason || '');
+    if (!rr.ok) return { deny: rr.error };
+    return { result: rr };
+  });
+  if (!dres.ok) fail('拒绝结果写回台账失败（' + dres.code + '）：' + dres.error);
+  if (dres.deny) fail(dres.deny);
   appendChangeLog(
     new Date().toISOString() + ' | scope | ' + (reqRow && reqRow.dispatch_id ? reqRow.dispatch_id : '') +
     ' | deny ' + id + ' | by ' + approver +
@@ -352,25 +362,41 @@ if (parsed.dispatch && parsed.add) {
       '需要它的内容，请让 Router 转写进 brief（契约通道），不要走扩权。');
   }
   // 升级检测要的是**同一份 scope 的前后快照** —— 升级是「差」，只看一份是看不出来的。
-  const scopeBefore = Array.isArray(d.scope) ? d.scope.slice() : [];
-  if (!Array.isArray(d.scope)) d.scope = [];
-  if (!Array.isArray(d.scope_amended)) d.scope_amended = [];
-  const added = [];
-  const duplicate = [];
-  if (!d.scope.includes(entry)) { d.scope.push(entry); added.push(entry); }
-  else duplicate.push(String(parsed.add));
-  if (!d.scope_amended.includes(entry)) d.scope_amended.push(entry);
-  // D-75：这条「直接加条目」的路与 --grant 是同一类动作 ——
-  // 加一条可写条目、而 scope 里已经有覆盖同一路径的只读条目 ⇒ 只读被升级成可写。
-  // 口径同 --grant：**不堵死升级、但不许静默**（回执与变更账都要写明升级了什么）。
-  const upgrades = detectReadonlyUpgrades(scopeBefore, d.scope, [String(parsed.add)]);
-  for (const b of (ledger.bindings || [])) {
-    if (b.dispatch_id && b.dispatch_id === d.dispatch_id) {
-      if (!Array.isArray(b.scope)) b.scope = [];
-      if (!b.scope.includes(entry)) b.scope.push(entry);
+  // 扩权写回走统一写入口（D-77）：整个「读-改-写」串行化 ——
+  // 锁外只做**校验**（派工在不在、是不是还在飞、批准人对不对），
+  // 真正的改动在锁内对着**最新**台账做，否则会覆盖并发写方的改动（静默丢记录）。
+  const ares = updateLedger((cur) => {
+    const dd = (cur.dispatches || []).find((x) => x.dispatch_id === String(parsed.dispatch));
+    if (!dd) return { deny: '台账里找不到派工 ' + parsed.dispatch };
+    if ((dd.state || 'active') !== 'active') {
+      return { deny: '派工 ' + parsed.dispatch + ' 已结束（state=' + dd.state + '）—— 事后再补权限没有意义，请重新派工' };
     }
-  }
-  if (!writeLedger(ledger)) fail('扩权写回台账失败');
+    // 升级检测要的是**同一份 scope 的前后快照** —— 升级是「差」，只看一份是看不出来的。
+    const scopeBefore2 = Array.isArray(dd.scope) ? dd.scope.slice() : [];
+    if (!Array.isArray(dd.scope)) dd.scope = [];
+    if (!Array.isArray(dd.scope_amended)) dd.scope_amended = [];
+    const added2 = [];
+    const duplicate2 = [];
+    if (!dd.scope.includes(entry)) { dd.scope.push(entry); added2.push(entry); }
+    else duplicate2.push(String(parsed.add));
+    if (!dd.scope_amended.includes(entry)) dd.scope_amended.push(entry);
+    // D-75：这条「直接加条目」的路与 --grant 是同一类动作 ——
+    // 加一条可写条目、而 scope 里已经有覆盖同一路径的只读条目 ⇒ 只读被升级成可写。
+    // 口径同 --grant：**不堵死升级、但不许静默**（回执与变更账都要写明升级了什么）。
+    const upgrades2 = detectReadonlyUpgrades(scopeBefore2, dd.scope, [String(parsed.add)]);
+    for (const b of (cur.bindings || [])) {
+      if (b.dispatch_id && b.dispatch_id === dd.dispatch_id) {
+        if (!Array.isArray(b.scope)) b.scope = [];
+        if (!b.scope.includes(entry)) b.scope.push(entry);
+      }
+    }
+    return { result: { dispatch_id: dd.dispatch_id, added: added2, duplicate: duplicate2, upgrades: upgrades2 } };
+  });
+  if (!ares.ok) fail('扩权写回台账失败（' + ares.code + '）：' + ares.error);
+  if (ares.deny) fail(ares.deny);
+  const added = ares.result.added;
+  const duplicate = ares.result.duplicate;
+  const upgrades = ares.result.upgrades;
   const upgradeNotice = upgrades.length
     ? '本次加条目把 ' + upgrades.map((u) => u.path).join(', ') +
       ' 从只读条目升级为可写（来源只读条目：' +

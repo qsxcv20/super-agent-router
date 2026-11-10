@@ -30,7 +30,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
-import { readLedger, writeLedger, markDispatchAborted } from './lib.mjs';
+import { readLedger, updateLedger, markDispatchAborted } from './lib.mjs';
 
 const argv = process.argv.slice(2);
 
@@ -102,29 +102,41 @@ if (!dispatchId && !parentSessionId && !parsed.all) {
   fail('没指定释放目标：给 --dispatch <id>（单条）或 --parent <session_id>（该父会话的全部在飞派工）。');
 }
 
-const activeBefore = (ledger.dispatches || []).filter((d) => (d.state || 'active') === 'active');
-const targets = (ledger.dispatches || []).filter((d) => {
-  if ((d.state || 'active') !== 'active') return false;
-  if (dispatchId && String(d.dispatch_id || '') !== dispatchId) return false;
-  if (parentSessionId && String(d.parent_session_id || '') !== parentSessionId) return false;
-  if (agent && String(d.agent || '') !== agent) return false;
-  return true;
+// 释放走统一写入口（D-77）：「读台账 → 找到目标 → 标记 aborted → 写回」必须整体串行化 ——
+// 否则释放与并发派工相撞时，后写的会把刚释放的结果覆盖掉（名额状态失步）。
+const relRes = updateLedger((cur) => {
+  const activeBefore = (cur.dispatches || []).filter((d) => (d.state || 'active') === 'active');
+  const targets = (cur.dispatches || []).filter((d) => {
+    if ((d.state || 'active') !== 'active') return false;
+    if (dispatchId && String(d.dispatch_id || '') !== dispatchId) return false;
+    if (parentSessionId && String(d.parent_session_id || '') !== parentSessionId) return false;
+    if (agent && String(d.agent || '') !== agent) return false;
+    return true;
+  });
+
+  const skipped = [];
+  for (const d of (cur.dispatches || [])) {
+    if ((d.state || 'active') === 'active') continue;
+    if (dispatchId && String(d.dispatch_id || '') === dispatchId) {
+      skipped.push({ dispatch_id: d.dispatch_id, state: d.state, why: '已非 active，不重复释放' });
+    }
+  }
+
+  const released = [];
+  for (const d of targets) {
+    if (markDispatchAborted(cur, d.dispatch_id, reason)) {
+      released.push({ dispatch_id: d.dispatch_id, agent: d.agent, parent_session_id: d.parent_session_id });
+    }
+  }
+  return { result: { released, skipped, activeBefore: activeBefore.length } };
 });
-
-const skipped = [];
-for (const d of (ledger.dispatches || [])) {
-  if ((d.state || 'active') === 'active') continue;
-  if (dispatchId && String(d.dispatch_id || '') === dispatchId) {
-    skipped.push({ dispatch_id: d.dispatch_id, state: d.state, why: '已非 active，不重复释放' });
-  }
+if (!relRes.ok) {
+  fail('释放结果写回台账失败 —— 名额可能仍被占着（' + resolved.dir + '）：' + (relRes.error || '') +
+    '（' + relRes.code + '）');
 }
-
-const released = [];
-for (const d of targets) {
-  if (markDispatchAborted(ledger, d.dispatch_id, reason)) {
-    released.push({ dispatch_id: d.dispatch_id, agent: d.agent, parent_session_id: d.parent_session_id });
-  }
-}
+const released = relRes.result.released;
+const skipped = relRes.result.skipped;
+const activeBeforeCount = relRes.result.activeBefore;
 
 if (!released.length) {
   // 没释放到任何一条 —— 必须让调用方看见，不许静默成功。
@@ -138,24 +150,19 @@ if (!released.length) {
       : '没有匹配到仍在飞的派工 —— 可能已经结束、已被释放，或过滤条件太窄',
     released: [],
     skipped,
-    active_before: activeBefore.length,
-    active_after: activeBefore.length,
+    active_before: activeBeforeCount,
+    active_after: activeBeforeCount,
     data_dir: resolved.dir
   }, null, 2) + '\n');
   process.exit(1);
 }
 
-const okWrite = writeLedger(ledger);
-if (!okWrite) {
-  fail('释放结果写回台账失败 —— 名额可能仍被占着（' + resolved.dir + '）');
-}
-
-const activeAfter = (ledger.dispatches || []).filter((d) => (d.state || 'active') === 'active');
+const activeAfter = (relRes.ledger.dispatches || []).filter((d) => (d.state || 'active') === 'active');
 process.stdout.write(JSON.stringify({
   ok: true,
   released,
   skipped,
-  active_before: activeBefore.length,
+  active_before: activeBeforeCount,
   active_after: activeAfter.length,
   reason,
   data_dir: resolved.dir,

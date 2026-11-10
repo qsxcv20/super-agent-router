@@ -68,3 +68,9 @@ transcript 里的 brief 解析、派工台账的生命周期。产出的改动�
 - 证据：plugin/scripts/lib.mjs 命令形态判定 + tests/guard-test.mjs 的 D-25 断言（两轮共 76 条）；两轮独立复验均 PASS_WITH_RESIDUAL，残余 D-25b/D-25c/D-25d/D-25e 全部闭环；父会话活体复核 43 条必拦全 DENY / 21 条负例全 ALLOW / 0 异常；五套回归 0 FAIL
 - 验收：verifier
 
+### 2026-11-10 · 编排机制边界判定改造：派工台账生命周期与名额回收 · 修派工台账并发写（D-77）与账号名单不可得时的降级口径（D-73）
+- 做法：把台账写路径统一收口到一个锁内入口（锁内重读 + 原子替换 + 回读校验 + 失败回滚），五个写方全部改走；用「起跑号牌」把并发概率变成必然，确定性复现改前「两个写者都报成功但只剩一条记录」的静默形态；D-73 不推翻 D-37 的「名单不可得不拒派」取舍，改成存在性三态 + 降级派工不占名额不参与冲突判定
+- 证据：plugin/scripts/lib.mjs 的 withLedgerLock/updateLedger；docs/audit/fix-d77.md 与 docs/audit/fix-d73.md；tests/dispatch-release-test.mjs 的 D-77 段 25 条、tests/scope-amend-test.mjs 的 D-73 段 22 条；变异体 SAR_MUTATION_D77 三个与 M-D73a/b/c 三个全转红；独立复验 docs/audit/verification-v056.md 判 PASS
+- 验收：verifier
+- 写入者：parent:mvs_9bdda202ae274c909a5b4352fc45a471 · 会话 mvs_9bdda202ae274c909a5b4352fc45a471 · 2026-11-10T17:17:22.290Z
+

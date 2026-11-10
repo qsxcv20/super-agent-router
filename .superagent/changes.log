@@ -30,3 +30,5 @@
 2026-11-10T12:58:23.929Z | tier | sa-mechanism-fix | scoped -> full | by mvs_9bdda202ae274c909a5b4352fc45a471
 2026-11-10T12:58:24.748Z | tier | sa-gate-integrity | full -> scoped | by mvs_9bdda202ae274c909a5b4352fc45a471
 2026-11-10T12:58:25.491Z | tier | sa-gate-integrity | scoped -> full | by mvs_9bdda202ae274c909a5b4352fc45a471
+2026-11-10T15:23:16.717Z | scope | dsp_mwarh6z0_fc0rb5 | deny req_mwasyzrh_v934wl | by mvs_9bdda202ae274c909a5b4352fc45a471 | parent-owned
+2026-11-10T15:23:17.327Z | scope | dsp_mwarh6z0_fc0rb5 | deny req_mwat166l_eysrrl | by mvs_9bdda202ae274c909a5b4352fc45a471 | parent-owned

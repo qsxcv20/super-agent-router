@@ -63,3 +63,9 @@
 - 证据：plugin/.minimax-plugin/plugin.json version=0.5.0；plugin/CHANGELOG.md +449 行；plugin/README.md +94/-5（含复合层措辞修正 1 行）；docs/audit/verification-v050-recheck.md 的 D1/D2/D3（版本一致、引用脚本全在、README 未承诺未实现能力）
 - 验收：verifier
 
+### 2026-11-10 · 插件包版本发布：版本号与描述同步、CHANGELOG 与面向使用者的 README 产出、包内自洽性校验 · 插件包版本发布 v0.5.6（版本号 / CHANGELOG / 面向使用者 README / 包内自洽性）
+- 做法：先核对 manifest 与 hooks.json 引用的脚本是否都存在，再同步版本号与描述；CHANGELOG 每条含改了什么/为什么/怎么验证；README 写用户视角并如实交代 D-80 残余与 D-76 设计边界；发布说明写在可写目录，正式路径由父会话转写
+- 证据：plugin/.minimax-plugin/plugin.json version=0.5.6；plugin/CHANGELOG.md 顶部 0.5.6 段 8 个变更块；plugin/README.md 新增「会话复用：省上下文的纪律」一节与排查清单第 12/13 条；docs/audit/release-v056.md；独立复验 docs/audit/verification-v056.md 判版本/CHANGELOG/README 三项 PASS
+- 验收：verifier
+- 写入者：parent:mvs_9bdda202ae274c909a5b4352fc45a471 · 会话 mvs_9bdda202ae274c909a5b4352fc45a471 · 2026-11-10T17:17:22.363Z
+

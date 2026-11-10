@@ -9,7 +9,7 @@
 |---|---|---|
 | **写** | `write` `edit` `multiedit` `notebookedit` `bash` | **严格**：必须精确落在白名单内 |
 | **读** | `read` `glob` `grep` `list` `search` | **宽松**：允许读 scope 所在目录树 |
-| **危险** | `mavis_agent_delete` `mavis_agent_update` `website_deploy` `miniapp` / `miniapp_publish` | **一律拦**，不论有没有 scope |
+| **危险** | `mavis_agent_create` `mavis_agent_delete` `mavis_agent_update` `website_deploy` `miniapp` / `miniapp_publish`，以及 `mavis` 的 `agent create` | **一律拦**，不论有没有 scope。建号与删除、改写**对称** —— 账号成员是跨项目全局可见的，子代理自己建号会让账号成员与项目名录脱钩 |
 | **复合** | `run_code` | **只判危险操作**；作用域交回内层调用（见下） |
 
 ## 只约束子代理（v0.4.0 起）
@@ -82,6 +82,7 @@ MCode 的工具接受绝对路径，scope 通常写相对路径。插件会自�
 |---|---|
 | `mavis_agent_delete` | 删除成员是账号级不可逆操作，历史会话不会随之清理 |
 | `mavis_agent_update` | 改成员的 description/system_prompt 是账号级变更，需人工确认 |
+| `mavis_agent_create` | 建号是账号级全局可见的变更，需人工确认（与删除、改写对称） |
 | `website_deploy` | 部署会把内容发布到公网 |
 | `miniapp` publish | 发布会替换线上运行实例 |
 

@@ -26,7 +26,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import {
-  readStdin, parseInputStrict, readLedger, writeLedger, inScope,
+  readStdin, parseInputStrict, readLedger, updateLedger, inScope,
   findBinding, upsertBinding, readBriefFromTranscript, scopeOverlaps,
   workspaceRoot, resolveAgentKey, isPathToken, extractPathTokens,
   splitCommandTokens, isReadOnlyCommand, extractWriteTargets, hasWriteVerb,
@@ -228,8 +228,9 @@ if (!binding) {
   if (d && Array.isArray(d.scope_amended) && d.scope_amended.length) {
     binding.scope = Array.from(new Set(brief.scope.concat(d.scope_amended)));
   }
-  upsertBinding(ledger, binding);
-  writeLedger(ledger);
+  // 绑定落盘走统一写入口（D-77）：整个「读-改-写」串行化 ——
+  // 裸 writeLedger 是无锁的读-改-写，两个 worker 同时建立绑定时后写的会覆盖先写的（D-77）。
+  updateLedger((cur) => { upsertBinding(cur, binding); });
   // 把该成员的历史教训送进 worker 上下文（D-06）：
   // 以前 lessons 只挂在父会话的 additionalContext 上，子会话永远收不到，
   // 除非 Router 手工抄进 brief —— 那不是机制保障，是靠自觉。
@@ -241,8 +242,7 @@ if (!binding) {
   // 升级前建的绑定没有等级字段：按名录读一次并**冻结**进绑定。
   // 免得每次调用都重读（也免得机制升级本身把老会话的等级打回 scoped）。
   binding.tier = dispatchTier(null, binding.agent_key || binding.agent);
-  upsertBinding(ledger, binding);
-  writeLedger(ledger);
+  updateLedger((cur) => { upsertBinding(cur, binding); });
 }
 
 // 私有记忆目录不得出现在 worker 的边界里（闸门 1c 的第二道防线）。
@@ -488,16 +488,21 @@ function denyOutOfScope(reason, outside, mode, opts) {
   const approvable = !(opts && opts.approvable === false);
   let reqId = '';
   try {
-    reqId = recordScopeRequest(ledger, {
-      dispatch_id: (binding && binding.dispatch_id) || '',
-      agent: (binding && (binding.agent_key || binding.agent)) || agentType,
-      session_id: sessionId,
-      tool,
-      mode,
-      tier,
-      targets: outside
+    // 记账走统一写入口（D-77）：台账写必须整体串行化 ——
+    // 否则两个 worker 同时撞墙时，后写的会把先写的越界请求整条覆盖掉（静默丢记录）。
+    const rec = updateLedger((cur) => {
+      const rid = recordScopeRequest(cur, {
+        dispatch_id: (binding && binding.dispatch_id) || '',
+        agent: (binding && (binding.agent_key || binding.agent)) || agentType,
+        session_id: sessionId,
+        tool,
+        mode,
+        tier,
+        targets: outside
+      });
+      return { result: { rid } };
     });
-    writeLedger(ledger);
+    if (rec.ok) reqId = String((rec.result && rec.result.rid) || '');
   } catch (e) {
     // 记账失败也不放过越界 —— 记账只是附加信息，拒绝才是主判定。
   }

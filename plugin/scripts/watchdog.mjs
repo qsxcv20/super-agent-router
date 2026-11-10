@@ -13,7 +13,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import {
-  readStdin, parseInput, readLedger, writeLedger,
+  readStdin, parseInput, updateLedger,
   findBinding, markDispatchDone, markDispatchAborted, readBriefFromTranscript,
   scopeOverlaps, reapExpiredDispatches, projectRoot, absolutizePath,
   resolveAgentKey, validateEntryOutput, KNOWN_EXTENSIONS, expandHomePath
@@ -297,8 +297,13 @@ if (entryCheck.checked && !entryCheck.ok) {
 
 // 判死结果先落盘（后面任何一条 block 都会直接 exit）
 try {
-  const ledger0 = readLedger();
-  if (ledger0.readable !== false && reapExpiredDispatches(ledger0)) writeLedger(ledger0);
+  // 判死走统一写入口（D-77）：整个「读-改-写」串行化 ——
+  // 否则与并发派工相撞时会把对方的记录整条覆盖掉（静默丢记录）。
+  const reapRes = updateLedger((cur) => { reapExpiredDispatches(cur); });
+  if (!reapRes.ok) {
+    process.stderr.write('[super-agent-router] 超时派工判死失败：' + (reapRes.error || '') +
+      '（' + reapRes.code + '）\n');
+  }
 } catch (e) {
   process.stderr.write('[super-agent-router] 超时派工判死失败：' + (e && e.message ? e.message : String(e)) + '\n');
 }
@@ -307,14 +312,18 @@ try {
 // 回收放在校验之后：被 block 的 worker 还在干活，名额不能提前还回去，
 // 否则并发上限与写冲突检测会在它仍在写的时候失效。
 try {
-  const ledger = readLedger();
-  if (ledger.readable !== false) {
-    reapExpiredDispatches(ledger);            // 超时兜底 + 读时自愈
-    const dispatchId = reclaim(ledger);
-    if (dispatchId && reclaimState(ledger, dispatchId) === 'active') {
-      markDispatchDone(ledger, dispatchId, 'subagent_stop');
+  // 回收走统一写入口（D-77）：判定与写回收结果必须原子 ——
+  // 否则「回收」会覆盖并发登记的新派工，那条派工就凭空消失了。
+  const recRes = updateLedger((cur) => {
+    reapExpiredDispatches(cur);            // 超时兜底 + 读时自愈
+    const dispatchId = reclaim(cur);
+    if (dispatchId && reclaimState(cur, dispatchId) === 'active') {
+      markDispatchDone(cur, dispatchId, 'subagent_stop');
     }
-    writeLedger(ledger);
+  });
+  if (!recRes.ok) {
+    process.stderr.write('[super-agent-router] 在飞名额回收失败：' + (recRes.error || '') +
+      '（' + recRes.code + '）\n');
   }
 } catch (e) {
   // 回收失败不能影响 watchdog 的本职判定，但必须留痕 ——

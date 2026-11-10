@@ -10,6 +10,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 export function readStdin() {
   try {
@@ -59,55 +60,432 @@ export function ledgerPath() {
   return dir ? path.join(dir, 'dispatches.json') : null;
 }
 
-export function readLedger() {
-  const empty = { dispatches: [], bindings: [], counters: {}, scope_requests: [], readable: true, error: '' };
-  const p = ledgerPath();
-  if (!p) return { ...empty, readable: false, error: '没有 PLUGIN_DATA，台账不可用' };
+// ── 台账读 ───────────────────────────────────────────────
+//
+// readLedgerRaw() 是**唯一的读入口**：读盘 → 解析 → 补默认字段 → 返回 { text, ledger }。
+// text 是**写前的原始文本** —— 回滚时要用它（回滚必须回到「写前状态」，不是回到「上一版」）。
+function emptyLedger() {
+  return { dispatches: [], bindings: [], counters: {}, scope_requests: [], readable: true, error: '' };
+}
+
+export function readLedgerRaw(p) {
+  const empty = emptyLedger();
+  let text = null;
   try {
-    const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
-    if (!Array.isArray(parsed.dispatches)) parsed.dispatches = [];
-    if (!Array.isArray(parsed.bindings)) parsed.bindings = [];
-    if (!parsed.counters || typeof parsed.counters !== 'object') parsed.counters = {};
-    if (!Array.isArray(parsed.scope_requests)) parsed.scope_requests = [];
-    // 迁移：旧版台账记的是「发起方会话」，语义与新版不一致。
-    //
-    // 状态只在**没写**的时候补 —— 补成 done 是为了不把一次历史派工永久锁在在飞名单里。
-    //
-    // 但**已经写着 active 的行必须保持 active**（RG-03）：
-    // 以前这里无条件写 state='done'，于是一条 state='active' 的旧行被**提升成 done** ——
-    // 等于替一个还没结束的派工伪造「已完成」，record-gate 的履历真实性判据
-    // （台账里存在一条 state='done' 的派工记录）就被绕过去了。
-    // 迁移只补缺失的字段，不改写已声明的状态。
-    for (const d of parsed.dispatches) {
-      if (!d.parent_session_id) {
-        d.parent_session_id = String(d.session_id || '');
-        d.legacy = true;
-        if (!d.state) d.state = 'done';
-      }
-      if (!d.state) d.state = 'active';
-    }
-    parsed.readable = true;
-    parsed.error = '';
-    return parsed;
+    text = fs.readFileSync(p, 'utf8');
   } catch (e) {
     // 台账存在却读不出来 = 派工记录不可信。
     // 以前这里直接返回空台账，等于「记录丢了 -> 视同没有在飞派工」-> 并发与冲突检测全盲。
     const exists = fs.existsSync(p);
     return {
-      ...empty,
-      readable: !exists,
-      error: exists ? ('台账读不出来：' + p + '（' + (e && e.message ? e.message : 'unknown') + '）') : ''
+      text: null,
+      ledger: {
+        ...empty,
+        readable: !exists,
+        error: exists ? ('台账读不出来：' + p + '（' + (e && e.message ? e.message : 'unknown') + '）') : ''
+      }
     };
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    parsed = null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {
+      text,
+      ledger: { ...empty, readable: false, error: '台账读不出来：' + p + '（不是合法的台账 JSON 对象）' }
+    };
+  }
+  if (!Array.isArray(parsed.dispatches)) parsed.dispatches = [];
+  if (!Array.isArray(parsed.bindings)) parsed.bindings = [];
+  if (!parsed.counters || typeof parsed.counters !== 'object') parsed.counters = {};
+  if (!Array.isArray(parsed.scope_requests)) parsed.scope_requests = [];
+  // 迁移：旧版台账记的是「发起方会话」，语义与新版不一致。
+  //
+  // 状态只在**没写**的时候补 —— 补成 done 是为了不把一次历史派工永久锁在在飞名单里。
+  //
+  // 但**已经写着 active 的行必须保持 active**（RG-03）：
+  // 以前这里无条件写 state='done'，于是一条 state='active' 的旧行被**提升成 done** ——
+  // 等于替一个还没结束的派工伪造「已完成」，record-gate 的履历真实性判据
+  // （台账里存在一条 state='done' 的派工记录）就被绕过去了。
+  // 迁移只补缺失的字段，不改写已声明的状态。
+  for (const d of parsed.dispatches) {
+    if (!d.parent_session_id) {
+      d.parent_session_id = String(d.session_id || '');
+      d.legacy = true;
+      if (!d.state) d.state = 'done';
+    }
+    if (!d.state) d.state = 'active';
+  }
+  parsed.readable = true;
+  parsed.error = '';
+  // 同步闸门（测试专用，默认关闭）：见 ledgerSyncGate() 的注释。
+  ledgerSyncGate();
+  return { text, ledger: parsed };
+}
+
+export function readLedger() {
+  const p = ledgerPath();
+  if (!p) {
+    return { ...emptyLedger(), readable: false, error: '没有 PLUGIN_DATA，台账不可用' };
+  }
+  return readLedgerRaw(p).ledger;
+}
+
+// ── 台账并发写（D-77）──────────────────────────────────
+//
+// 为什么台账不能再用「读一次 → 改 → 整体覆盖」：
+//   两个写者各读一次旧快照、各自改一处、各自写一次 —— 后写的把先写的**整条**覆盖掉。
+//   覆盖后的文件**格式合法、内容看着正常**，读侧检测不出来：
+//   D-77 的活体证据就是「台账里查不到一条真在跑的派工」。
+//   光把「写」做成原子替换**不够** —— 后写进程拿到的仍是旧快照，
+//   原子替换只是把「写一半」变成「写全但内容旧」。
+//
+// 正确形态：**整个「读-改-写」串行化** ——
+//   取跨进程锁 → **锁内重新读盘** → 锁内改 → 临时文件 + 原子替换 → 回读校验 → 不一致则回滚 → 放锁。
+//
+// 为什么临界区这么窄：锁只锁「读+改+写」这一小段；
+// 临界区里不许有子进程调用、网络调用、其它 I/O（把慢 I/O 塞进锁里会让并发派工互相等死）。
+// 台账文件小，这一段只有几毫秒。
+//
+// 锁参数之间的关系必须**可被回归验算**（契约 S7.5）：
+//   等待超时 ≥ 最大并发数 × rename 重试窗口（排队方不能被误判失败）；
+//   偷锁阈值 > 等待超时（防「偷走还在用的锁」）。
+// 这是**必要条件与充分条件之别** —— 少一条就会在真实并发下出问题。
+export const LEDGER_LOCK_WAIT_TIMEOUT_MS = 60000;
+export const LEDGER_LOCK_STALE_MS = 180000;
+export const LEDGER_RENAME_MAX_ATTEMPTS = 40;
+export const LEDGER_RENAME_BACKOFF_BASE_MS = 25;
+export const LEDGER_RENAME_BACKOFF_STEP_MS = 10;
+// 持锁者在一次 rename 上的最坏耗时：
+//   40 × 25ms + 10ms × (0+1+…+39) = 1000 + 7800 = 8800ms
+export const LEDGER_RENAME_RETRY_WINDOW_MS =
+  LEDGER_RENAME_MAX_ATTEMPTS * LEDGER_RENAME_BACKOFF_BASE_MS +
+  LEDGER_RENAME_BACKOFF_STEP_MS * (LEDGER_RENAME_MAX_ATTEMPTS * (LEDGER_RENAME_MAX_ATTEMPTS - 1) / 2);
+
+// 锁文件目录：与错题本那套（lessons.mjs）共用目录但**键不同** ——
+// 共用目录不共用锁：两个文件是两份状态，本来就不该互相阻塞。
+const LEDGER_LOCK_DIR = path.join(os.tmpdir(), 'super-agent-router-locks');
+
+function ledgerLockPathFor(file) {
+  const key = crypto.createHash('sha1').update(path.resolve(file)).digest('hex').slice(0, 24);
+  return path.join(LEDGER_LOCK_DIR, key + '.ledger.lock');
+}
+
+// 同步等待（不依赖事件循环）—— 锁等待与 rename 重试都要它。
+function sleepSync(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    const until = Date.now() + ms;
+    while (Date.now() < until) { /* 没有 Atomics.wait 时的兜底 */ }
   }
 }
 
+// ── 故障注入（测试专用；默认关闭）──────────────────────────
+//
+// 为什么要有它：ACCEPT 要求「写到一半被中断」「回读校验失败」这两条**确定性**复现。
+// 靠真实并发去撞，撞到与否看运气 —— 断言就会时敏（同族教训 D-59~D-61）。
+//
+// 开关沿用契约 S14 的两个环境变量，但 **token 加 ledger- 前缀**：
+//   SAR_FAULT_INJECT=ledger-rename-eperm:1   原子替换前 N 次抛 EPERM（Windows 文件被占用）
+//   SAR_FAULT_INJECT=ledger-lock-eperm:1     排他创建锁文件前 N 次抛 EPERM
+//   SAR_FAULT_INJECT=ledger-verify-fail      原子替换成功后把台账改写成过期快照 ⇒ 回读校验必然失败
+//   SAR_FAULT_INJECT=ledger-crash-mid-write  写完临时文件、原子替换之前**直接退出进程**（模拟被 kill）
+//   SAR_FAULT_RUN=<批次号>                   批次号一变，计数归零
+//
+// 加前缀是为了**不与错题本那套钩子串扰**：同一进程里两个模块读同一个 SAR_FAULT_INJECT，
+// token 同名会互相消耗额度（lessons.mjs 的 verify-fail 与这里的 verify-fail 不是一回事）。
+// 不设 SAR_FAULT_INJECT ⇒ 钩子完全关闭，正常路径的时序与返回值逐字不变。
+const LEDGER_FAULT_ENV = 'SAR_FAULT_INJECT';
+const LEDGER_FAULT_RUN_ENV = 'SAR_FAULT_RUN';
+let LEDGER_FAULT_CACHE = { key: null, spec: null };
+
+function ledgerFaultSpec() {
+  const raw = process.env[LEDGER_FAULT_ENV];
+  const run = process.env[LEDGER_FAULT_RUN_ENV] || '';
+  const key = (raw || '') + '||' + run;
+  if (key === LEDGER_FAULT_CACHE.key) return LEDGER_FAULT_CACHE.spec;
+  const spec = { renameEperm: 0, lockEperm: 0, verifyFail: false, crashMidWrite: false };
+  for (const tok of String(raw || '').split(',')) {
+    const t = tok.trim();
+    if (!t) continue;
+    const [name, arg] = t.split(':');
+    const n = arg === undefined ? 1 : parseInt(arg, 10);
+    const count = (Number.isFinite(n) && n > 0) ? n : 1;
+    if (name === 'ledger-rename-eperm') spec.renameEperm = count;
+    else if (name === 'ledger-lock-eperm') spec.lockEperm = count;
+    else if (name === 'ledger-verify-fail') spec.verifyFail = true;
+    else if (name === 'ledger-crash-mid-write') spec.crashMidWrite = true;
+  }
+  LEDGER_FAULT_CACHE = { key, spec };
+  return spec;
+}
+
+function ledgerFaultError(code, message) {
+  const e = new Error(message);
+  e.code = code;
+  return e;
+}
+
+function faultLedgerRename() {
+  const spec = ledgerFaultSpec();
+  if (!spec || spec.renameEperm <= 0) return;
+  spec.renameEperm--;
+  throw ledgerFaultError('EPERM', '故障注入：台账原子替换被占用文件（Windows EPERM）');
+}
+
+function faultLedgerLockOpen() {
+  const spec = ledgerFaultSpec();
+  if (!spec || spec.lockEperm <= 0) return;
+  spec.lockEperm--;
+  throw ledgerFaultError('EPERM', '故障注入：台账锁文件排他创建失败（Windows ERROR_SHARING_VIOLATION）');
+}
+
+function faultLedgerVerifyOverwrite(p) {
+  const spec = ledgerFaultSpec();
+  if (!spec || !spec.verifyFail) return;
+  try {
+    fs.writeFileSync(p, '# 过期快照（故障注入：模拟并发写入方用旧快照覆盖）\n', 'utf8');
+  } catch { /* 注入失败就让校验自然通过 —— 那正是「注入没生效」，断言会红 */ }
+}
+
+function faultLedgerCrashMidWrite() {
+  const spec = ledgerFaultSpec();
+  if (!spec || !spec.crashMidWrite) return;
+  // 写到一半被中断：台账文件此刻**还没被碰过**（新内容在临时文件里），
+  // 所以原记录一条不少、文件仍是合法 JSON —— 这正是要断言的。
+  process.exit(9);
+}
+
+// ── 同步闸门（测试专用；默认关闭）──────────────────────────
+//
+// 为什么要有它：「两个并发写者都基于同一份旧快照」这个前提必须能**确定**地造出来 ——
+// 靠真实并发去撞，撞到与否看运气，断言就会时敏。
+//
+// 机制：每次读台账之后，进程写下「我读到快照了」的标记（read-<pid>-<n>），
+// 然后等一个 go 文件出现才继续。没设 SAR_LEDGER_SYNC_DIR ⇒ 整个钩子不执行。
+//
+// 为什么这个位置是对的：**读之后**。
+//   · 旧形态（读-改-写，无锁）：两个写者都在 go 之前完成读 ⇒ 拿到同一份快照 ⇒ 后写的覆盖先写的。
+//   · 新形态（锁内重读）：后一个写者拿不到锁，直到前一个写完才进入 ⇒ 它读到的是**最新**快照。
+// go 之前没有人能落盘（落盘在同步点之后），所以「同一份快照」这件事是确定的，不是概率。
+const LEDGER_SYNC_ENV = 'SAR_LEDGER_SYNC_DIR';
+let ledgerSyncSeq = 0;
+
+function ledgerSyncGate() {
+  const dir = String(process.env[LEDGER_SYNC_ENV] || '').trim();
+  if (!dir) return;
+  try { fs.mkdirSync(dir, { recursive: true }); } catch { /* 目录建不出来时下面只是等不到 go */ }
+  ledgerSyncSeq += 1;
+  try {
+    fs.writeFileSync(path.join(dir, 'read-' + process.pid + '-' + ledgerSyncSeq), String(Date.now()), 'utf8');
+  } catch { /* 标记写不出来不影响主流程 */ }
+  const go = path.join(dir, 'go');
+  const deadline = Date.now() + 30000;
+  while (!fs.existsSync(go)) {
+    if (Date.now() > deadline) break;   // 等不到就放行：宁可并发风险，也不能把机制永久卡死
+    sleepSync(10);
+  }
+}
+
+// ── 跨进程锁 ────────────────────────────────────────────
+//
+// 排他创建锁文件（'wx'）= 原子地「只有一个人拿到」。
+// 拿不到就等 —— 等待上限必须容得下最大并发数轮持有者（见上面的常量关系）。
+// 偷锁只在锁文件「老到不可能还在用」时才做（老到 staleMs 为止）。
+export function withLedgerLock(file, fn, opts = {}) {
+  const lockPath = ledgerLockPathFor(file);
+  const timeoutMs = opts.timeoutMs || LEDGER_LOCK_WAIT_TIMEOUT_MS;
+  const staleMs = opts.staleMs || LEDGER_LOCK_STALE_MS;
+  try { fs.mkdirSync(LEDGER_LOCK_DIR, { recursive: true }); } catch { /* 目录建不出来时下面会报错 */ }
+  const deadline = Date.now() + timeoutMs;
+  let fd = null;
+  for (;;) {
+    try {
+      faultLedgerLockOpen();
+      fd = fs.openSync(lockPath, 'wx');
+      break;
+    } catch (e) {
+      if (e && e.code === 'EEXIST') {
+        // 持锁者可能已经死了（进程被 kill）—— 锁文件「老到不可能还在用」就当过期锁处理。
+        try {
+          const st = fs.statSync(lockPath);
+          if (Date.now() - st.mtimeMs > staleMs) {
+            fs.rmSync(lockPath, { force: true });
+            continue;
+          }
+        } catch { /* stat 失败 = 锁刚好被释放了，重试 */ }
+      }
+      // 拿不到锁就**继续等**，绝不放行 ——「拿不到锁还照样写」就是无锁写。
+      if (Date.now() > deadline) {
+        const err = new Error('台账锁等待超时（' + timeoutMs + 'ms）：' + lockPath);
+        err.code = 'ELOCKTIMEOUT';
+        throw err;
+      }
+      sleepSync(15);
+    }
+  }
+  try {
+    // 锁文件里记下持有者 pid：出问题时能看出「是谁拿着锁」。
+    try { fs.writeFileSync(fd, String(process.pid) + ' ' + Date.now()); } catch { /* 记不住不影响互斥 */ }
+    return fn();
+  } finally {
+    try { if (fd !== null) fs.closeSync(fd); } catch { /* ignore */ }
+    try { fs.rmSync(lockPath, { force: true }); } catch { /* ignore */ }
+  }
+}
+
+// 原子替换：同目录临时文件 + rename（同一卷 ⇒ rename 是原子的）。
+// rename 覆盖已存在文件在 Windows 上可能 EPERM（文件被别的进程占用）⇒ 有界重试。
+function replaceFileWithRetry(tmp, p) {
+  let last = '';
+  for (let i = 0; i < LEDGER_RENAME_MAX_ATTEMPTS; i++) {
+    try {
+      faultLedgerRename();
+      fs.renameSync(tmp, p);
+      return { ok: true };
+    } catch (e) {
+      last = String((e && e.message) || e);
+      sleepSync(LEDGER_RENAME_BACKOFF_BASE_MS + LEDGER_RENAME_BACKOFF_STEP_MS * i);
+    }
+  }
+  return { ok: false, error: 'rename 重试 ' + LEDGER_RENAME_MAX_ATTEMPTS + ' 次仍失败：' + last };
+}
+
+function writeLedgerFileAtomic(p, text) {
+  const dir = path.dirname(p);
+  try { fs.mkdirSync(dir, { recursive: true }); } catch { /* 目录建不出来时下面会报错 */ }
+  const tmp = path.join(dir, '.' + path.basename(p) + '.tmp-' + process.pid + '-' +
+    Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6));
+  try {
+    fs.writeFileSync(tmp, text, 'utf8');
+  } catch (e) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
+    return { ok: false, error: '写台账临时文件失败：' + String((e && e.message) || e) };
+  }
+  // 故障注入：写到一半被中断（模拟进程被 kill）—— 台账文件此刻还没被碰过。
+  faultLedgerCrashMidWrite();
+  const rr = replaceFileWithRetry(tmp, p);
+  if (!rr.ok) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
+    return { ok: false, error: '台账原子替换失败：' + rr.error };
+  }
+  // 故障注入：verify-fail —— rename 成功后把目标改写成过期快照 ⇒ 回读校验必然失败。
+  faultLedgerVerifyOverwrite(p);
+  return { ok: true };
+}
+
+// 回滚：把台账恢复到**写前状态**（不是「上一版」，是这次写之前那一刻）。
+function restoreLedgerFile(p, text) {
+  try {
+    if (text === null || text === undefined) {
+      try { fs.rmSync(p, { force: true }); } catch { /* ignore */ }
+      return { ok: true };
+    }
+    const dir = path.dirname(p);
+    const tmp = path.join(dir, '.' + path.basename(p) + '.rollback-' + process.pid + '-' + Date.now().toString(36));
+    fs.writeFileSync(tmp, text, 'utf8');
+    const rr = replaceFileWithRetry(tmp, p);
+    if (!rr.ok) {
+      try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
+      return { ok: false, error: rr.error };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+function readLedgerText(p) {
+  try { return fs.readFileSync(p, 'utf8'); } catch { return null; }
+}
+
+// ── 统一写入口 ──────────────────────────────────────────
+//
+// **所有台账写方都必须走这里**（dispatch / guard / scope-amend / release-slot / watchdog）。
+// 留「有的走新入口、有的还裸写」的半拉子 = 同一个毛病还在，只是概率变小了。
+//
+// mutator 契约：
+//   mutator(current) —— current 是**锁内重读**得到的最新台账，就地改它；
+//   返回 { result }  = 正常；返回 { deny: '原因' } = 业务上要拒绝（内容没变就不落盘）。
+//   mutator 里**不许**做子进程调用、网络调用、其它 I/O —— 临界区里那些东西会把并发派工互相等死。
+//
+// 返回 { ok, code, error, written, result, deny }：
+//   code 形如 R-LEDGER-*，断言按编号指认命中的是哪条规则（不按文案关键词）。
+export function updateLedger(mutator, opts = {}) {
+  const p = ledgerPath();
+  if (!p) {
+    return { ok: false, code: 'R-LEDGER-NO-DATA-DIR', error: '没有 PLUGIN_DATA，台账不可用', written: false };
+  }
+  let out;
+  try {
+    out = withLedgerLock(p, () => updateLedgerLocked(p, mutator, opts));
+  } catch (e) {
+    const code = (e && e.code) || 'R-LEDGER-LOCK-FAILED';
+    return { ok: false, code, error: '台账加锁失败：' + String((e && e.message) || e), written: false };
+  }
+  return out;
+}
+
+function updateLedgerLocked(p, mutator, opts) {
+  // 锁内**重新读盘** —— 不用调用方之前读的那份快照（那正是 D-77 要修的东西）。
+  const before = readLedgerRaw(p);
+  if (before.ledger.readable === false && before.ledger.error) {
+    return { ok: false, code: 'R-LEDGER-UNREADABLE', error: before.ledger.error, written: false };
+  }
+  const current = before.ledger;
+  const mut = mutator(current) || {};
+  const text = JSON.stringify(current, null, 2);
+  // 内容没变就不落盘：少一次写，也避免「为了写而写」把并发方的内容覆盖成同内容。
+  if (text === before.text) {
+    return { ok: true, written: false, result: mut.result, deny: String(mut.deny || ''), ledger: current };
+  }
+  const wr = writeLedgerFileAtomic(p, text);
+  if (!wr.ok) {
+    return { ok: false, code: 'R-LEDGER-WRITE-FAILED', error: wr.error, written: false };
+  }
+  // 回读校验：写出去的必须读得回来，且**逐字一致**。
+  // 不一致 = 被并发写入方用旧快照覆盖了（或落盘被截断）—— 这种情况下「说成功」比报错更坏。
+  const back = readLedgerText(p);
+  if (back !== text) {
+    const rb = restoreLedgerFile(p, before.text);
+    const rbCheck = rb.ok ? (readLedgerText(p) === before.text) : false;
+    return {
+      ok: false,
+      code: 'R-LEDGER-VERIFY-FAILED',
+      error: '台账回读校验失败：写出去的内容与读回来的不一致（可能被并发写入方用旧快照覆盖）',
+      written: false,
+      rolledBack: rb.ok && rbCheck,
+      rollbackError: rb.ok ? (rbCheck ? '' : '回滚动作完成但内容仍与写前不一致') : rb.error
+    };
+  }
+  return { ok: true, written: true, result: mut.result, deny: String(mut.deny || ''), ledger: current };
+}
+
+// 兼容入口：把**给定的**台账写盘。
+//
+// 保留它是因为它是对外导出（签名与语义不变）；但它的形态是「写我给的这份快照」——
+// **不重读**，所以拿旧快照调用它仍然可能覆盖别人的记录。
+// 正式写路径一律用 updateLedger()；五个写方已经全部改走统一入口（回归里有静态断言钉住）。
 export function writeLedger(ledger) {
   const p = ledgerPath();
   if (!p) return false;
   try {
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify(ledger, null, 2), 'utf8');
-    return true;
+    return withLedgerLock(p, () => {
+      const before = readLedgerText(p);
+      const text = JSON.stringify(ledger, null, 2);
+      const wr = writeLedgerFileAtomic(p, text);
+      if (!wr.ok) return false;
+      const back = readLedgerText(p);
+      if (back !== text) {
+        restoreLedgerFile(p, before);
+        return false;
+      }
+      return true;
+    });
   } catch {
     return false;
   }
@@ -895,6 +1273,21 @@ export function withinWorkspace(target) {
 }
 
 // ── 派工记录 ──────────────────────────────────────────
+//
+// 一条记录是否**占名额**（D-73）。
+//
+// 降级路径登记的派工**不占名额、不参与 SCOPE 冲突判定**：
+// 那条派工的存在性**没有核验过**，子会话可能根本没起来 ——
+// 派给不存在的成员不会启动子会话，但台账照样会有一条 state:'active'。
+// 让它占名额 = 一次「名单取不到」就吃掉并发名额与累计名额，
+// 还让同 SCOPE 的后续派工被「组队冲突」误拦 —— 外观完全正常 ⇒ 静默失效。
+//
+// 判据是台账记录上的 degraded 标记（由 dispatch 在降级路径上写）。
+// 默认口径是「占名额」：**只有显式标了 degraded:true 才不占** ——
+// 反过来写（默认不占）会让所有历史记录都不算名额，并发上限当场失效。
+export function countsAgainstSlots(d) {
+  return !(d && d.degraded === true);
+}
 // TTL 兜底（S6.2 第 2 条 / S6.4）：超过 TTL 还停在 active 的记录判死。
 // 以前只有 TTL 过滤，state 永远停在 active —— 台账状态与真实情况失步（D-10）。
 export function markDispatchAborted(ledger, dispatchId, reason) {
@@ -925,6 +1318,7 @@ export function activeDispatches(ledger, parentSessionId, now = Date.now()) {
   return (ledger.dispatches || []).filter((d) => {
     if (String(d.parent_session_id || '') !== key) return false;
     if ((d.state || 'active') !== 'active') return false;
+    if (!countsAgainstSlots(d)) return false;
     return now - (d.at || 0) < DISPATCH_TTL_MS;
   });
 }
@@ -937,6 +1331,8 @@ export function activeDispatchesAll(ledger, now = Date.now(), project = null) {
   return (ledger.dispatches || []).filter((d) => {
     if ((d.state || 'active') !== 'active') return false;
     if (now - (d.at || 0) >= DISPATCH_TTL_MS) return false;
+    // 降级记录（D-73）不参与 SCOPE 冲突判定 —— 见 countsAgainstSlots 的注释。
+    if (!countsAgainstSlots(d)) return false;
     if (p && d.project) {
       // 记录所属项目不同 -> 不是同一个工作区的并发写
       if (String(d.project).toLowerCase() !== p) return false;
@@ -947,7 +1343,10 @@ export function activeDispatchesAll(ledger, now = Date.now(), project = null) {
 
 export function totalDispatches(ledger, parentSessionId) {
   const key = String(parentSessionId || '');
-  return (ledger.dispatches || []).filter((d) => String(d.parent_session_id || '') === key).length;
+  // 累计名额只数「占名额」的记录（D-73）：降级派工的存在性没核验过，
+  // 它不该吃掉一条累计额度（否则一次「名单取不到」就少一条额度，而额度永远回不来）。
+  return (ledger.dispatches || []).filter((d) =>
+    String(d.parent_session_id || '') === key && countsAgainstSlots(d)).length;
 }
 
 // 累计派工额度改用持久化计数器（D-19）：

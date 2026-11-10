@@ -21,6 +21,13 @@ const PLUGIN_ROOT = process.env.SAR_PLUGIN_ROOT ||
 const GUARD = path.join(PLUGIN_ROOT, 'scripts', 'guard.mjs');
 const AMEND = path.join(PLUGIN_ROOT, 'scripts', 'scope-amend.mjs');
 const DISPATCH = path.join(PLUGIN_ROOT, 'scripts', 'dispatch.mjs');
+// D-73 的新增断言锚在**仓库副本**上（本单改的是仓库副本，安装副本由父会话发版时同步；
+// 跟着安装副本走的话，同步前直接跑本套件会看到**假红**）。
+// SAR_D73_PLUGIN_ROOT 供变异矩阵指向副本。
+const { fileURLToPath: _fileURLToPath73 } = await import('node:url');
+const REPO_PLUGIN73 = path.resolve(path.dirname(_fileURLToPath73(import.meta.url)), '..', 'plugin');
+const D73_PLUGIN = process.env.SAR_D73_PLUGIN_ROOT || REPO_PLUGIN73;
+const D73_DISPATCH = path.join(D73_PLUGIN, 'scripts', 'dispatch.mjs');
 
 let fail = 0;
 const ok = (l, c, e = '') => { if (!c) fail++; console.log((c ? 'PASS ' : 'FAIL ') + l + (e ? ' :: ' + e : '')); };
@@ -31,6 +38,12 @@ const ok = (l, c, e = '') => { if (!c) fail++; console.log((c ? 'PASS ' : 'FAIL 
 // 函数声明会提升到模块作用域顶部，所以这里调用它没问题。
 if (process.env.SAR_MUTATION_D75 === '1') {
   await runD75MutationMatrix();
+}
+
+// D-73 的变异矩阵（独立开关 SAR_MUTATION_D73=1）—— 与 D-75 的开关分开，
+// 两边的分档语义混在一起会让「总矩阵跑过了」被误读成「D-73 的变异体也跑过了」。
+if (process.env.SAR_MUTATION_D73 === '1') {
+  await runD73MutationMatrix();
 }
 
 // 造一份子会话 transcript（brief 的载体）。
@@ -1040,6 +1053,331 @@ async function runD75MutationMatrix() {
     }
   }
   console.log(fail === 0 ? '>>> D75 MUTATION MATRIX OK' : '>>> D75 MUTATION MATRIX FAILURES: ' + fail);
+  process.exit(fail === 0 ? 0 : 1);
+}
+
+
+// ══════════════════════════════════════════════════════════
+// D-73：账号成员名单不可得时的降级口径
+// ══════════════════════════════════════════════════════════
+//
+// 夹具自带**项目名录**（roster.json）——
+// 没有名录的项目压根不用「专项成员」这套玩法，降级口径不适用（口径见 fix-d73.md §3）。
+function makeD73Env() {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sar-d73-'));
+  const PROJ = path.join(tmp, 'proj');
+  fs.mkdirSync(path.join(PROJ, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(PROJ, 'src', 'app.ts'), 'export const a = 1;', 'utf8');
+  fs.mkdirSync(path.join(PROJ, '.superagent'), { recursive: true });
+  fs.writeFileSync(path.join(PROJ, '.superagent', 'roster.json'), JSON.stringify({
+    members: [{ name: 'sa-in-roster', owns: 'x' }, { name: 'worker', owns: 'y' }],
+    updated: '2026-11-10'
+  }, null, 2), 'utf8');
+  const DATA = path.join(tmp, 'data');
+  fs.mkdirSync(DATA, { recursive: true });
+  fs.writeFileSync(path.join(DATA, 'dispatches.json'), JSON.stringify({
+    dispatches: [], bindings: [], counters: {}, scope_requests: []
+  }, null, 2), 'utf8');
+  return { tmp, PROJ, DATA };
+}
+
+// accountDir 为空 ⇒ 账号名单不可得（PLUGIN_DATA 不指向插件专属目录，且没显式指定账号目录）
+function d73Dispatch(env, opt) {
+  const e = Object.assign({}, process.env, {
+    PLUGIN_DATA: env.DATA, MINIMAX_PROJECT_DIR: env.PROJ
+  });
+  if (opt.accountDir) e.SAR_ACCOUNT_AGENTS_DIR = opt.accountDir;
+  else delete e.SAR_ACCOUNT_AGENTS_DIR;
+  const r = spawnSync(process.execPath, [D73_DISPATCH], {
+    input: JSON.stringify({
+      hook_event_name: 'PreToolUse', tool_name: 'task',
+      session_id: opt.session, turn_id: opt.turn,
+      tool_input: { agent_name: opt.agent, prompt: 'SCOPE: ' + opt.scope + '\n干活' }
+    }),
+    encoding: 'utf8', env: e, timeout: 60000
+  });
+  return { code: r.status, out: String(r.stdout || '') };
+}
+
+function d73Ledger(env) {
+  return JSON.parse(fs.readFileSync(path.join(env.DATA, 'dispatches.json'), 'utf8'));
+}
+
+// ── D-73-1：名录内成员 —— 照常派工、照常占名额、照常参与冲突判定 ──
+{
+  const env = makeD73Env();
+  const r1 = d73Dispatch(env, { session: 'mvs_d73a', turn: 't1', agent: 'sa-in-roster', scope: 'src/app.ts' });
+  ok('D-73 名录内成员在降级路径下照常派工（不被拒）', !r1.out.includes('deny'), r1.out.slice(0, 200));
+  const led = d73Ledger(env);
+  const rec = (led.dispatches || []).find((d) => d.agent === 'sa-in-roster');
+  ok('D-73 名录内成员的记录标 roster_declared 且不算降级',
+    !!rec && rec.member_existence === 'roster_declared' && rec.degraded === false,
+    JSON.stringify(rec && { e: rec.member_existence, d: rec.degraded }));
+  ok('D-73 名录内成员照常占累计名额', Number((led.counters || {})['mvs_d73a'] || 0) === 1,
+    JSON.stringify(led.counters || {}));
+
+  // 名录内那条记录**参与**冲突判定：换一个正常路径的派工去撞它 ⇒ 必须被拦
+  const acct = fs.mkdtempSync(path.join(os.tmpdir(), 'sar-d73-acct-'));
+  fs.mkdirSync(path.join(acct, 'worker'), { recursive: true });
+  const r2 = d73Dispatch(env, { session: 'mvs_d73b', turn: 't1', agent: 'worker', scope: 'src/app.ts', accountDir: acct });
+  ok('D-73 名录内成员照常参与 SCOPE 冲突判定（同 scope 的下一条被拦）',
+    r2.out.includes('deny') && r2.out.includes('组队冲突'), r2.out.slice(0, 200));
+}
+
+// ── D-73-2：名录外成员 —— 降级放行，但不占名额、不堵后续派工 ──
+{
+  const env = makeD73Env();
+  const r1 = d73Dispatch(env, { session: 'mvs_d73c', turn: 't1', agent: 'ghost-member', scope: 'src/app.ts' });
+  ok('D-73 名录外成员在降级路径下被放行（不拒派）', !r1.out.includes('deny'), r1.out.slice(0, 200));
+  let led = d73Ledger(env);
+  const rec = (led.dispatches || []).find((d) => d.agent === 'ghost-member');
+  ok('D-73 名录外成员的记录标 unverified 且降级',
+    !!rec && rec.member_existence === 'unverified' && rec.degraded === true,
+    JSON.stringify(rec && { e: rec.member_existence, d: rec.degraded }));
+  ok('D-73 名录外成员不占累计名额', !((led.counters || {})['mvs_d73c']),
+    JSON.stringify(led.counters || {}));
+
+  // 同 SCOPE 的下一条派工**不被误拦**（降级那条不参与冲突判定）
+  const r2 = d73Dispatch(env, { session: 'mvs_d73d', turn: 't1', agent: 'another-ghost', scope: 'src/app.ts' });
+  ok('D-73 名录外成员不参与 SCOPE 冲突判定（同 scope 的下一条不被误拦）',
+    !r2.out.includes('deny'), r2.out.slice(0, 220));
+
+  // 名额口径：降级记录不计入在飞名单
+  led = d73Ledger(env);
+  const activeCount = (led.dispatches || []).filter((d) => (d.state || 'active') === 'active' && d.degraded !== true).length;
+  ok('D-73 降级记录不计入在飞名额', activeCount === 0, '在飞（占名额）数=' + activeCount);
+}
+
+// ── D-73-3：降级这件事父会话看得见（台账字段 + 痕迹 + 注入披露）──
+{
+  const env = makeD73Env();
+  const r1 = d73Dispatch(env, { session: 'mvs_d73e', turn: 't1', agent: 'ghost-member', scope: 'src/app.ts' });
+  const led = d73Ledger(env);
+  const rec = (led.dispatches || []).find((d) => d.agent === 'ghost-member');
+  ok('D-73 降级在台账里看得见（member_existence / degraded 字段）',
+    !!rec && rec.member_existence === 'unverified' && rec.degraded === true,
+    JSON.stringify(rec && { e: rec.member_existence, d: rec.degraded }));
+  const tracePath = path.join(env.DATA, 'hooks', 'super-agent-router', 'gate-trace.jsonl');
+  const traceTxt = fs.existsSync(tracePath) ? fs.readFileSync(tracePath, 'utf8') : '';
+  ok('D-73 降级在痕迹里有更响的记录（带 session id、目标成员、存在性口径、原因）',
+    traceTxt.includes('account_member_list_unavailable') && traceTxt.includes('mvs_d73e') &&
+    traceTxt.includes('ghost-member') && traceTxt.includes('existence=unverified'),
+    traceTxt.slice(-240));
+  ok('D-73 降级在派工注入里披露（降级提示可断言）',
+    r1.out.includes('降级提示') && r1.out.includes('ghost-member') && r1.out.includes('不占名额'),
+    r1.out.slice(0, 260));
+}
+
+// ── D-73-4：正常路径不回归（名单可得时，派给不存在的成员仍被拒）──
+{
+  const env = makeD73Env();
+  const acct = fs.mkdtempSync(path.join(os.tmpdir(), 'sar-d73-acct2-'));
+  fs.mkdirSync(path.join(acct, 'worker'), { recursive: true });
+  const r1 = d73Dispatch(env, { session: 'mvs_d73f', turn: 't1', agent: 'ghost-member', scope: 'src/app.ts', accountDir: acct });
+  ok('D-73 正常路径：派给账号里不存在的成员仍被拒',
+    r1.out.includes('deny') && r1.out.includes('在账号里不存在'), r1.out.slice(0, 200));
+  const led = d73Ledger(env);
+  ok('D-73 正常路径：被拒的派工不留台账记录',
+    (led.dispatches || []).length === 0, '记录数=' + (led.dispatches || []).length);
+  ok('D-73 正常路径：被拒的派工不占累计名额', !((led.counters || {})['mvs_d73f']),
+    JSON.stringify(led.counters || {}));
+}
+
+
+// ── D-73-5：降级记录**不占并发名额上限**（名额口径的直接证据）────
+//
+// 构造：5 条正常路径派工（占名额） + 1 条降级记录（不占名额）⇒ 第 7 条正常派工
+// 在在飞数 = 5 时放行；若降级记录也占名额（在飞数 = 6），它会被「派工超限」拦下。
+{
+  const env = makeD73Env();
+  const acct = fs.mkdtempSync(path.join(os.tmpdir(), 'sar-d73-acct3-'));
+  fs.mkdirSync(path.join(acct, 'worker'), { recursive: true });
+  for (let i = 0; i < 5; i++) {
+    d73Dispatch(env, {
+      session: 'mvs_d73g', turn: 't' + i, agent: 'worker',
+      scope: 'src/f' + i + '.ts', accountDir: acct
+    });
+  }
+  const deg = d73Dispatch(env, { session: 'mvs_d73g', turn: 'td', agent: 'ghost-member', scope: 'src/fd.ts' });
+  ok('D-73 降级记录登记成功（前置条件自检）', !deg.out.includes('deny'), deg.out.slice(0, 160));
+  const last = d73Dispatch(env, {
+    session: 'mvs_d73g', turn: 't9', agent: 'worker', scope: 'src/f9.ts', accountDir: acct
+  });
+  ok('D-73 降级记录不占并发名额（在飞数 5 时第 7 条派工不被超限拦）',
+    !last.out.includes('deny'), last.out.slice(0, 200));
+  const led = d73Ledger(env);
+  const degRec = (led.dispatches || []).find((d) => d.agent === 'ghost-member');
+  ok('D-73 降级记录确实在台账里且标了 degraded（前置条件自检）',
+    !!degRec && degRec.degraded === true, JSON.stringify(degRec && degRec.degraded));
+}
+
+// ── D-73-5b：降级派工**不被同 scope 的在飞派工拦**（它自己也不参与冲突判定）──
+//
+// 这一条与 D-73-6 是一对：D-73-6 测「降级记录不挡别人」，
+// 这一条测「别人也挡不住降级派工」—— 两个方向都要成立，
+// 否则降级派工要么堵死后续派工、要么被别人误拦。
+{
+  const env = makeD73Env();
+  const acct = fs.mkdtempSync(path.join(os.tmpdir(), 'sar-d73-acct5-'));
+  fs.mkdirSync(path.join(acct, 'worker'), { recursive: true });
+  const first = d73Dispatch(env, {
+    session: 'mvs_d73i', turn: 't1', agent: 'worker', scope: 'src/app.ts', accountDir: acct
+  });
+  ok('D-73 前置：正常路径派工登记成功（在飞）', !first.out.includes('deny'), first.out.slice(0, 160));
+  const second = d73Dispatch(env, {
+    session: 'mvs_d73i', turn: 't2', agent: 'ghost-member', scope: 'src/app.ts'
+  });
+  ok('D-73 降级派工不参与冲突判定（同 scope 的在飞派工不拦它）',
+    !second.out.includes('deny'), second.out.slice(0, 220));
+}
+
+// ── D-73-6：降级记录**不挡别人**（它不参与别人那一次的冲突判定）────
+{
+  const env = makeD73Env();
+  const acct = fs.mkdtempSync(path.join(os.tmpdir(), 'sar-d73-acct4-'));
+  fs.mkdirSync(path.join(acct, 'worker'), { recursive: true });
+  const deg = d73Dispatch(env, { session: 'mvs_d73h', turn: 't1', agent: 'ghost-member', scope: 'src/app.ts' });
+  ok('D-73 降级记录登记成功（前置条件自检）', !deg.out.includes('deny'), deg.out.slice(0, 160));
+  const other = d73Dispatch(env, {
+    session: 'mvs_d73h', turn: 't2', agent: 'worker', scope: 'src/app.ts', accountDir: acct
+  });
+  ok('D-73 降级记录不挡后续派工（同 scope 的正常路径派工不被拦）',
+    !other.out.includes('deny'), other.out.slice(0, 220));
+}
+
+// ── D-73 变异自检（独立开关 SAR_MUTATION_D73=1）────────────────────
+//
+// 为什么要有这个：只跑「新实现全绿」不能证明修复有效 ——
+// 必须把实现改回去，看目标断言会不会红（D-66 的教训）。
+//
+// 做法与 tests/scope-amend-test.mjs 里 D-75 的那一套同构：
+//   ① 把插件副本装到**系统临时目录**（仓库工作树零改动，跑完即删）；
+//   ② 在**副本**上做定向回退；
+//   ③ 用副本重跑本套件的目标断言；
+//   ④ 目标断言必须转红。
+//
+// 为什么用**独立开关**而不是复用 SAR_MUTATION=1：
+//   总矩阵（SAR_MUTATION=1）归 tests/e2e-test.mjs 那一单独占。
+//   两边的分档语义混在一起会让「总矩阵跑过了」被误读成「D-73 的变异体也跑过了」。
+//
+// 用法：node tests/scope-amend-test.mjs   （设 SAR_MUTATION_D73=1）
+async function runD73MutationMatrix() {
+  const { fileURLToPath } = await import('node:url');
+  const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const SRC_PLUGIN = path.join(REPO, 'plugin');
+
+  const mutRead = (p) => fs.readFileSync(p, 'utf8');
+  const mutWrite = (p, s) => fs.writeFileSync(p, s, 'utf8');
+  const mutReplace = (file, from, to) => {
+    const src = mutRead(file);
+    const idx = src.indexOf(from);
+    if (idx < 0) throw new Error('变异点未命中：' + path.basename(file) + ' :: ' + from.slice(0, 90));
+    if (src.indexOf(from, idx + 1) >= 0) throw new Error('变异点不唯一：' + path.basename(file) + ' :: ' + from.slice(0, 90));
+    mutWrite(file, src.slice(0, idx) + to + src.slice(idx + from.length));
+  };
+
+  const MUTANTS = [
+    {
+      // M1：把「降级记录不占名额」整个摘掉 —— 降级记录又被算进在飞名单。
+      // 它必须让「降级记录不占并发名额」与「降级记录不计入在飞名额」两条断言转红。
+      id: 'M-D73a', defect: 'D-73',
+      what: '回退「降级记录不占名额」：countsAgainstSlots 不再读 degraded 标记',
+      expect: [
+        'D-73 降级记录不占并发名额（在飞数 5 时第 7 条派工不被超限拦）',
+        'D-73 降级记录不挡后续派工（同 scope 的正常路径派工不被拦）'
+      ],
+      expectGreen: [
+        // 这条是**自检口径**（测试自己数台账），不依赖机制 ⇒ 回退实现时它仍绿是对的
+        'D-73 降级记录不计入在飞名额'
+      ],
+      apply: (mut) => {
+        mutReplace(path.join(mut, 'scripts', 'lib.mjs'),
+          "export function countsAgainstSlots(d) {\n  return !(d && d.degraded === true);\n}",
+          "export function countsAgainstSlots(d) {\n  // MUT-D73a：降级标记被忽略（降级记录又占名额）\n  return true;\n}");
+      }
+    },
+    {
+      // M2：把「名录内 / 名录外口径不同」摘掉 —— 两类成员一律标 unverified。
+      // 它必须让「名录内成员的记录标 roster_declared」那条专属断言转红，
+      // 而降级路径那几条（unverified）**仍然绿** —— 这一对变异体证明
+      // 「名录内外口径不同」与「降级路径处理」是**各自**被钉住的，不是连着的。
+      id: 'M-D73b', defect: 'D-73',
+      what: '回退「名录内外口径不同」：存在性口径恒为 unverified',
+      expect: [
+        'D-73 名录内成员的记录标 roster_declared 且不算降级'
+      ],
+      expectGreen: [
+        'D-73 名录外成员的记录标 unverified 且降级',
+        'D-73 名录外成员不参与 SCOPE 冲突判定（同 scope 的下一条不被误拦）'
+      ],
+      apply: (mut) => {
+        mutReplace(path.join(mut, 'scripts', 'dispatch.mjs'),
+          "  memberExistence = rosterDeclared ? 'roster_declared' : 'unverified';",
+          "  // MUT-D73b：名录内外口径不再有别\n  memberExistence = 'unverified';");
+      }
+    },
+    {
+      // M3：把「降级派工不参与冲突检测」摘掉 —— 降级派工又会被同 SCOPE 的在飞派工拦下。
+      // 这正是 D-73 说的「同 SCOPE 的后续派工被误拦」，必须被钉住。
+      id: 'M-D73c', defect: 'D-73',
+      what: '回退「降级派工不参与冲突检测」：冲突检测不再跳过降级派工',
+      expect: [
+        'D-73 降级派工不参与冲突判定（同 scope 的在飞派工不拦它）'
+      ],
+      expectGreen: [
+        // 「降级记录不挡别人」由台账侧的过滤保证，与本变异点无关 ⇒ 仍绿是对的
+        'D-73 降级记录不挡后续派工（同 scope 的正常路径派工不被拦）'
+      ],
+      apply: (mut) => {
+        mutReplace(path.join(mut, 'scripts', 'dispatch.mjs'),
+          "  if (!degradedFlag) {\n    const activeAll = activeDispatchesAll(cur, now, workspaceRoot());",
+          "  if (true) { // MUT-D73c：冲突检测不再跳过降级派工\n    const activeAll = activeDispatchesAll(cur, now, workspaceRoot());");
+      }
+    }
+  ];
+
+  const mutRunSuite = (pluginRoot) => {
+    const r = spawnSync(process.execPath, [path.join(REPO, 'tests', 'scope-amend-test.mjs')], {
+      encoding: 'utf8', timeout: 300000, cwd: REPO,
+      // 必须清掉 SAR_MUTATION_D73（否则递归跑自己）与 SAR_MUTATION_D75（另一套矩阵）。
+      env: Object.assign({}, process.env, {
+        SAR_PLUGIN_ROOT: pluginRoot, SAR_MUTATION_D73: '', SAR_MUTATION_D75: '',
+        SAR_D73_PLUGIN_ROOT: pluginRoot
+      })
+    });
+    const out = String(r.stdout || '') + String(r.stderr || '');
+    const lines = out.split(/\r?\n/);
+    return {
+      red: lines.filter((l) => l.startsWith('FAIL ')),
+      green: lines.filter((l) => l.startsWith('PASS ')).length
+    };
+  };
+
+  console.log('| 变异体 | 缺陷 | 变异内容 | 转红断言数 | 目标断言全部转红 |');
+  console.log('|---|---|---|---|---|');
+  for (const m of MUTANTS) {
+    const mutRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sar-mut-d73-' + m.id.toLowerCase() + '-'));
+    const mutPlugin = path.join(mutRoot, 'plugin');
+    try {
+      fs.cpSync(SRC_PLUGIN, mutPlugin, { recursive: true });
+      m.apply(mutPlugin);
+      const r = mutRunSuite(mutPlugin);
+      const missing = m.expect.filter((name) => !r.red.some((l) => l.indexOf(name) >= 0));
+      const wronglyRed = (m.expectGreen || []).filter((name) => r.red.some((l) => l.indexOf(name) >= 0));
+      const good = missing.length === 0 && r.red.length > 0 && wronglyRed.length === 0;
+      if (!good) fail++;
+      console.log('| ' + m.id + ' | ' + m.defect + ' | ' + m.what + ' | ' + r.red.length + ' | ' + (good ? 'YES' : 'NO') + ' |');
+      for (const l of r.red) console.log('    RED ' + l.slice(0, 150));
+      if (missing.length) console.log('    MISS ' + missing.join(' / '));
+      if (wronglyRed.length) console.log('    WRONG-RED ' + wronglyRed.join(' / '));
+    } catch (e) {
+      fail++;
+      console.log('| ' + m.id + ' | ' + m.defect + ' | ' + m.what + ' | 0 | NO（变异体本身失败：' + e.message + '） |');
+    } finally {
+      fs.rmSync(mutRoot, { recursive: true, force: true });
+    }
+  }
+  console.log(fail === 0 ? '>>> D73 MUTATION MATRIX OK' : '>>> D73 MUTATION MATRIX FAILURES: ' + fail);
   process.exit(fail === 0 ? 0 : 1);
 }
 
