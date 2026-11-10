@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Super Agent Router v0.5.1 · 插件描述与思维导图</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#f7f5f0;
+    --card:#ffffff;
+    --line:#e9e3d6;
+    --line-soft:#f0ebe0;
+    --ink:#14171e;
+    --body:#3a4256;
+    --muted:#7c7a72;
+    --primary:#2f6f5e;
+    --accent:#c97b3f;
+    --primary-wash:rgba(47,111,94,.06);
+    --accent-wash:rgba(201,123,63,.07);
+    --radius:16px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--paper);
+    color:var(--body);
+    font-family:'Outfit','PingFang SC','Microsoft YaHei',sans-serif;
+    font-size:15px;
+    line-height:1.62;
+    -webkit-font-smoothing:antialiased;
+  }
+  body::before,body::after{
+    content:"";position:fixed;width:520px;height:520px;border-radius:50%;
+    pointer-events:none;z-index:0;
+  }
+  body::before{top:-260px;right:-180px;background:radial-gradient(circle,rgba(47,111,94,.05),transparent 70%)}
+  body::after{bottom:-300px;left:-200px;background:radial-gradient(circle,rgba(201,123,63,.05),transparent 70%)}
+  .wrap{position:relative;z-index:1;max-width:1120px;margin:0 auto;padding:56px 24px 88px}
+  h1,h2,h3{font-family:'DM Serif Display','Songti SC',serif;color:var(--ink);font-weight:400;letter-spacing:-.005em}
+  h1{font-size:34px;line-height:1.2;margin:0 0 10px}
+  h2{font-size:25px;margin:0 0 6px}
+  h3{font-size:17px;margin:0 0 8px;font-family:'Outfit','PingFang SC',sans-serif;font-weight:600;color:var(--ink)}
+  p{margin:0 0 10px}
+  code,.mono{font-family:'JetBrains Mono',monospace;font-size:.86em}
+  section{margin-top:56px}
+  .sec-head{display:flex;align-items:baseline;gap:12px;margin-bottom:20px;padding-bottom:12px;border-bottom:1px solid var(--line)}
+  .sec-head .n{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--primary);border:1px solid rgba(47,111,94,.3);border-radius:6px;padding:2px 7px;letter-spacing:.06em}
+  .lede{font-size:17px;color:var(--ink);max-width:70ch}
+  .dim{color:var(--muted)}
+
+  /* ---------- hero ---------- */
+  .hero{padding-bottom:8px}
+  .kicker{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--primary);border:1px solid rgba(47,111,94,.28);border-radius:999px;padding:5px 13px;background:var(--primary-wash);margin-bottom:20px}
+  .kicker svg{width:14px;height:14px}
+  .hero .lede{margin-bottom:22px}
+  .metabar{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--line);border-radius:var(--radius);background:var(--card);overflow:hidden;box-shadow:0_2px 8px rgba(0,0,0,.04)}
+  .metabar div{padding:16px 18px;border-right:1px solid var(--line-soft)}
+  .metabar div:last-child{border-right:none}
+  .metabar dt{font-size:12px;color:var(--muted);letter-spacing:.08em;margin-bottom:4px}
+  .metabar dd{margin:0;font-family:'DM Serif Display',serif;font-size:23px;color:var(--ink);line-height:1.2}
+  .metabar dd small{font-family:'Outfit',sans-serif;font-size:12.5px;color:var(--muted);margin-left:5px}
+
+  /* ---------- mind map ---------- */
+  .map{position:relative;margin:6px 0 10px}
+  .map-grid{display:grid;grid-template-columns:1fr 240px 1fr;gap:26px;align-items:center}
+  .col{display:flex;flex-direction:column;gap:16px}
+  .wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0;overflow:visible}
+  .node{position:relative;z-index:1;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px;box-shadow:0 2px 8px rgba(0,0,0,.04);transition:transform .2s,box-shadow .2s,border-color .2s,opacity .25s}
+  .node:hover{transform:translateY(-2px);box-shadow:0 8px 22px -6px rgba(0,0,0,.1);border-color:rgba(47,111,94,.4)}
+  .node-h{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .node-h svg{width:16px;height:16px;color:var(--primary);flex:none}
+  .node-h b{font-size:14.5px;color:var(--ink);font-weight:600}
+  .node ul{list-style:none;margin:0;padding:0}
+  .node li{position:relative;padding-left:14px;font-size:13.4px;line-height:1.55;color:var(--body)}
+  .node li::before{content:"";position:absolute;left:0;top:.62em;width:5px;height:5px;border-radius:50%;background:rgba(47,111,94,.45)}
+  .node li em{font-style:normal;color:var(--muted);font-size:12.4px}
+  .node.core{background:linear-gradient(180deg,#ffffff,#fbfaf6);border:1.5px solid rgba(47,111,94,.45);border-radius:18px;padding:24px 20px;text-align:center;box-shadow:0 10px 30px -14px rgba(47,111,94,.5)}
+  .node.core .badge{display:inline-block;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--primary);background:var(--primary-wash);border-radius:6px;padding:3px 8px;margin-bottom:10px}
+  .node.core h3{font-family:'DM Serif Display',serif;font-size:22px;font-weight:400;margin-bottom:6px}
+  .node.core p{font-size:13px;color:var(--muted);margin:0}
+  .map.dimmed .node:not(.hovered){opacity:.4}
+  .map-foot{display:flex;gap:14px;flex-wrap:wrap;justify-content:center;margin-top:16px;font-size:12.5px;color:var(--muted)}
+  .map-foot span{display:inline-flex;align-items:center;gap:6px}
+  .map-foot i{width:8px;height:8px;border-radius:50%;display:inline-block}
+
+  /* ---------- tables ---------- */
+  .tbl{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.04)}
+  .tbl th{font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);text-align:left;padding:11px 14px;background:#fbfaf6;border-bottom:1px solid var(--line);font-weight:600}
+  .tbl td{padding:11px 14px;border-bottom:1px solid var(--line-soft);font-size:13.6px;vertical-align:top}
+  .tbl tr:last-child td{border-bottom:none}
+  .tbl .mono{color:var(--primary);font-size:12.6px}
+  .tag{display:inline-block;font-size:11.5px;border-radius:6px;padding:1px 7px;border:1px solid transparent;white-space:nowrap}
+  .tag.hard{background:rgba(201,123,63,.1);color:#9c5c2b;border-color:rgba(201,123,63,.25)}
+  .tag.loose{background:rgba(47,111,94,.09);color:var(--primary);border-color:rgba(47,111,94,.22)}
+  .tag.deny{background:rgba(180,60,60,.08);color:#9b3b3b;border-color:rgba(180,60,60,.2)}
+
+  /* ---------- flow ---------- */
+  .flow{display:grid;grid-template-columns:repeat(4,1fr);gap:0;align-items:stretch}
+  .step{position:relative;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 16px 16px 44px;box-shadow:0 2px 8px rgba(0,0,0,.04)}
+  .step .idx{position:absolute;left:14px;top:15px;width:20px;height:20px;border-radius:6px;background:var(--primary-wash);border:1px solid rgba(47,111,94,.25);color:var(--primary);font-family:'JetBrains Mono',monospace;font-size:11px;display:flex;align-items:center;justify-content:center}
+  .step h4{margin:0 0 6px;font-size:14px;color:var(--ink);font-weight:600}
+  .step p{margin:0;font-size:13px;color:var(--body);line-height:1.55}
+  .step::after{content:"";position:absolute;right:-13px;top:50%;width:12px;height:12px;border-top:1.5px solid rgba(47,111,94,.4);border-right:1.5px solid rgba(47,111,94,.4);transform:translateY(-50%) rotate(45deg);z-index:2;background:var(--paper)}
+  .step:last-child::after{display:none}
+
+  /* ---------- mirror ---------- */
+  .mirror{display:grid;grid-template-columns:1fr 56px 1fr;align-items:center;gap:0}
+  .mirror-col{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;box-shadow:0 2px 8px rgba(0,0,0,.04)}
+  .mirror-col.ok{border-top:3px solid var(--primary)}
+  .mirror-col.bad{border-top:3px solid var(--accent)}
+  .mirror-col h4{margin:0 0 4px;font-size:15px;color:var(--ink);font-weight:600}
+  .mirror-col .who{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--muted);margin-bottom:8px}
+  .mirror-col ul{list-style:none;margin:0;padding:0}
+  .mirror-col li{font-size:13.4px;padding-left:15px;position:relative;line-height:1.55}
+  .mirror-col li::before{content:"";position:absolute;left:0;top:.62em;width:5px;height:5px;border-radius:50%}
+  .mirror-col.ok li::before{background:rgba(47,111,94,.5)}
+  .mirror-col.bad li::before{background:rgba(201,123,63,.55)}
+  .mirror-mid{display:flex;align-items:center;justify-content:center;color:var(--muted)}
+  .mirror-mid svg{width:22px;height:22px}
+
+  /* ---------- changes ---------- */
+  .changes{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .chg{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:0 2px 8px rgba(0,0,0,.04)}
+  .chg .hd{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+  .chg .hd svg{width:15px;height:15px;color:var(--accent);flex:none}
+  .chg .hd b{font-size:14px;color:var(--ink);font-weight:600}
+  .chg p{margin:0;font-size:13.3px;color:var(--body)}
+
+  /* ---------- roster ---------- */
+  .roster{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px}
+  .mem{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px;box-shadow:0 2px 8px rgba(0,0,0,.04);transition:transform .2s,box-shadow .2s}
+  .mem:hover{transform:translateY(-2px);box-shadow:0 8px 22px -6px rgba(0,0,0,.1)}
+  .mem .nm{font-family:'JetBrains Mono',monospace;font-size:12.8px;color:var(--primary);margin-bottom:5px}
+  .mem p{margin:0;font-size:13px;color:var(--body);line-height:1.5}
+  .mem.builtin .nm{color:var(--muted)}
+  .mem .kind{font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:5px;padding:1px 6px;margin-left:6px}
+
+  .note{background:var(--accent-wash);border:1px solid rgba(201,123,63,.24);border-radius:12px;padding:14px 18px;font-size:13.6px;color:var(--body);margin-top:18px}
+  .note b{color:var(--ink)}
+  footer{margin-top:56px;padding-top:18px;border-top:1px solid var(--line);font-size:12.5px;color:var(--muted);display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
+
+  @media (max-width:980px){
+    .map-grid{grid-template-columns:1fr;gap:14px}
+    .wires{display:none}
+    .node.core{order:-1}
+    .metabar{grid-template-columns:repeat(2,1fr)}
+    .metabar div:nth-child(2){border-right:none}
+    .metabar div:nth-child(1),.metabar div:nth-child(2){border-bottom:1px solid var(--line-soft)}
+    .flow{grid-template-columns:1fr;gap:12px}
+    .step::after{display:none}
+    .changes{grid-template-columns:1fr}
+    .mirror{grid-template-columns:1fr;gap:12px}
+    .mirror-mid{transform:rotate(90deg);padding:4px 0}
+    h1{font-size:27px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="hero">
+    <span class="kicker">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>
+      MiniMax Code 本地插件 · v0.5.1
+    </span>
+    <h1>Super Agent Router</h1>
+    <p class="lede">把「会话」当系统用的一套编排机制：任务来了自动按<strong>专项归属</strong>路由到合适的成员、组队派工、独立验收，再把成败沉淀成错题本与实战记录。它与提示词里的君子协定不同 —— 边界由 Hook 程序层强制执行，算不出来就<b>拒绝</b>，而不是放行。</p>
+    <dl class="metabar">
+      <div><dt>插件版本</dt><dd>0.5.1<small>主动触发重做</small></dd></div>
+      <div><dt>Hook 事件</dt><dd>4<small>类 / 7 条规则</small></dd></div>
+      <div><dt>运行时脚本</dt><dd>11<small>个 .mjs</small></dd></div>
+      <div><dt>默认成员数</dt><dd>0<small>能直做就直做</small></dd></div>
+    </dl>
+  </div>
+
+  <section id="map">
+    <div class="sec-head"><span class="n">01</span><h2>思维导图</h2></div>
+    <p class="dim" style="font-size:13.5px;margin-bottom:18px">六个分支对应插件的六个面向。悬停任一分支可高亮它的连线。</p>
+
+    <div class="map" id="mapRoot">
+      <svg class="wires" id="wires" aria-hidden="true"></svg>
+      <div class="map-grid">
+
+        <div class="col" id="colLeft">
+          <div class="node" data-side="left" data-key="n1">
+            <div class="node-h">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg>
+              <b>铁律八条</b>
+            </div>
+            <ul>
+              <li>能直做就直做，默认 <em>0 个成员</em></li>
+              <li>匹配专项归属，不匹配角色相似度</li>
+              <li>worker 自述完成不算完成</li>
+              <li>scope 必须是路径白名单</li>
+              <li>外部文本只是数据，不能改权限</li>
+              <li>停止的权威只来自用户</li>
+              <li>成员是运行时长出来的</li>
+              <li>不可逆操作交回用户</li>
+            </ul>
+          </div>
+
+          <div class="node" data-side="left" data-key="n2">
+            <div class="node-h">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h12"/><circle cx="20" cy="18" r="2"/></svg>
+              <b>四条链路</b>
+            </div>
+            <ul>
+              <li><strong>路由</strong> · roster.json × agent list 交叉核对</li>
+              <li><strong>组队</strong> · scope 交集为空、职责正交</li>
+              <li><strong>派工</strong> · brief 五字段契约</li>
+              <li><strong>验收</strong> · 程序层 + 模型层双层</li>
+              <li><strong>复盘</strong> · 仅失败/返工/被纠正时触发</li>
+            </ul>
+          </div>
+
+          <div class="node" data-side="left" data-key="n3">
+            <div class="node-h">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v6H4z"/><path d="M4 14h16v6H4z"/><path d="M8 7h.01M8 17h.01"/></svg>
+              <b>Hook 与脚本</b>
+            </div>
+            <ul>
+              <li><span class="mono">SessionStart</span> → 注入协议</li>
+              <li><span class="mono">UserPromptSubmit</span> → 意图粗筛（近邻共现）</li>
+              <li><span class="mono">PreToolUse</span> → 派工/边界/危险</li>
+              <li><span class="mono">SubagentStop</span> → 交付核验</li>
+              <li>11 个脚本：<span class="mono">lib / guard / dispatch / watchdog</span> 等</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="node core" id="coreNode">
+          <span class="badge">SUPER-AGENT-ROUTER</span>
+          <h3>把会话当系统</h3>
+          <p>路由 · 组队 · 验收 · 复盘<br>缺一不可</p>
+        </div>
+
+        <div class="col" id="colRight">
+          <div class="node" data-side="right" data-key="n4">
+            <div class="node-h">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              <b>授权模型</b>
+            </div>
+            <ul>
+              <li><strong>写</strong> 严格：必须精确落在白名单内</li>
+              <li><strong>读</strong> 宽松：允许读 scope 目录树</li>
+              <li><strong>复合</strong> 只判危险操作，作用域交内层</li>
+              <li><strong>危险</strong> 子代理一律拦，父会话不拦</li>
+              <li><span class="mono">ro:</span> 条目只授读、永不授写</li>
+            </ul>
+          </div>
+
+          <div class="node" data-side="right" data-key="n5">
+            <div class="node-h">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>
+              <b>数据与沉淀</b>
+            </div>
+            <ul>
+              <li><span class="mono">.superagent/roster.json</span> 归属唯一依据</li>
+              <li><span class="mono">methods/&lt;名&gt;.md</span> 方法论 + 实战记录</li>
+              <li><span class="mono">lessons/&lt;名&gt;.md</span> 错题本</li>
+              <li><span class="mono">lessons/_router.md</span> 编排层错题本</li>
+              <li><span class="mono">dispatches.json</span> 派工台账（运行时）</li>
+            </ul>
+          </div>
+
+          <div class="node" data-side="right" data-key="n6">
+            <div class="node-h">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="M12 8v5M12 16h.01"/></svg>
+              <b>硬边界与代价</b>
+            </div>
+            <ul>
+              <li>只约束被派工的子代理</li>
+              <li>必须由独立 verifier 验收</li>
+              <li>匹配器改动后<strong>必须新开会话</strong></li>
+              <li>解析不到边界 = 拒绝（不放行）</li>
+              <li>Hook 失败是 fail-open，静默</li>
+            </ul>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="map-foot">
+      <span><i style="background:var(--primary)"></i>机制与流程</span>
+      <span><i style="background:var(--accent)"></i>边界与代价</span>
+      <span>所有数字取自插件包 v0.5.1 实际文件，非文档推断</span>
+    </div>
+  </section>
+
+  <section id="what">
+    <div class="sec-head"><span class="n">02</span><h2>它解决什么问题</h2></div>
+    <p>多 Agent 协作里最容易塌陷的不是模型能力，而是<strong>边界</strong>与<strong>可信度</strong>：worker 顺手改了不该改的文件、说自己做完了但没证据、同一个坑反复踩。这个插件把这两件事从「提示词里叮嘱」变成「程序层强制」。</p>
+    <div class="flow" style="margin-top:22px">
+      <div class="step"><span class="idx">1</span><h4>路由</h4><p>读专项名录 + 查运行时成员表，交叉核对后按 <span class="mono">owns</span> 匹配该归谁。</p></div>
+      <div class="step"><span class="idx">2</span><h4>组队与派工</h4><p>scope 不重叠、职责正交；brief 带白名单与验收清单，冲突即拒派。</p></div>
+      <div class="step"><span class="idx">3</span><h4>独立验收</h4><p>程序层查越界与空交付，模型层查做没做对；两者职责不可互换。</p></div>
+      <div class="step"><span class="idx">4</span><h4>沉淀</h4><p>失败进错题本、成功进实战记录，下次派工把教训注入 worker 上下文。</p></div>
+    </div>
+    <div class="note"><b>默认 0 个成员。</b>改 typo、查 API、单点小改一律直接做 —— 走完全套编排比直接干更慢更贵。只有当任务需要同时做多件不同性质的事，或某件事有明确方法论要求、要做「精」而不是「能」时，才值得组队。</div>
+  </section>
+
+  <section id="hooks">
+    <div class="sec-head"><span class="n">03</span><h2>Hook 接线与运行时脚本</h2></div>
+    <p class="dim" style="font-size:13.5px;margin-bottom:16px">插件全部能力挂在父会话（Router）的 5 类事件上。子会话不会触发 <span class="mono">SessionStart</span> 与 <span class="mono">UserPromptSubmit</span> —— 所以对 worker 而言，<strong>brief 是唯一的协议载体</strong>。</p>
+    <table class="tbl">
+      <thead><tr><th style="width:15%">事件</th><th style="width:26%">matcher</th><th style="width:22%">脚本</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td><span class="mono">SessionStart</span></td><td class="dim">—</td><td class="mono">session-start.mjs</td><td>会话开始注入编排协议与成员实战记录参考</td></tr>
+        <tr><td><span class="mono">UserPromptSubmit</span></td><td class="dim">—</td><td class="mono">gate.mjs</td><td>意图粗筛（S11）：意图词须与动作词邻近共现；未命中时仅在「有专项成员且有实战记录」的工作区兜底注入一行</td></tr>
+        <tr><td><span class="mono">PreToolUse</span></td><td class="mono">task</td><td class="mono">dispatch.mjs</td><td>派工校验：SCOPE 解析、写冲突检测、在飞名额上限（并发 6 / 累计 30）</td></tr>
+        <tr><td><span class="mono">PreToolUse</span></td><td class="mono">write|edit|multiedit|<br>notebookedit|bash|run_code|mavis</td><td class="mono">guard.mjs</td><td>写侧边界判定 + 危险操作拦截</td></tr>
+        <tr><td><span class="mono">PreToolUse</span></td><td class="mono">read|glob|grep|list|search</td><td class="mono">guard.mjs</td><td>读侧宽松放行（scope 所在目录树）</td></tr>
+        <tr><td><span class="mono">PreToolUse</span></td><td class="mono">mavis_agent_delete|<br>mavis_agent_update|website_deploy|<br>miniapp|miniapp_publish</td><td class="mono">guard.mjs</td><td>账号级与对外不可逆动作，子代理一律拦</td></tr>
+        <tr><td><span class="mono">SubagentStop</span></td><td class="dim">—</td><td class="mono">watchdog.mjs</td><td>交付核验：空交付 / 拿不出证据 → 要求补证；路径声称需真实落盘</td></tr>
+      </tbody>
+    </table>
+    <div class="note"><b>协议文件 8 份：</b><span class="mono">teams / routing / brief / bootstrap / review / records / scope / contract</span>。其中 <span class="mono">contract.md</span> 是<b>契约单一事实源</b>（S1~S11：条目模板、编号命名空间、scope 与通道语义、台账口径、触发语义）—— brief 只引用，不复述。</div>
+  </section>
+
+  <section id="scope">
+    <div class="sec-head"><span class="n">04</span><h2>授权模型的四层语义</h2></div>
+    <table class="tbl">
+      <thead><tr><th style="width:14%">层</th><th style="width:30%">通道</th><th style="width:14%">判定</th><th>语义</th></tr></thead>
+      <tbody>
+        <tr><td><span class="tag hard">写 · 严格</span></td><td class="mono">write edit multiedit notebookedit bash</td><td><span class="tag deny">拦</span></td><td>必须精确落在白名单内；bash 按命令意图分流，只读命令按读判定，其余按写判定</td></tr>
+        <tr><td><span class="tag loose">读 · 宽松</span></td><td class="mono">read glob grep list search</td><td><span class="tag loose">放行</span></td><td>允许读 scope 所在目录树（读邻近文件理解上下文是正当的）；glob/grep 按有效检索根判定</td></tr>
+        <tr><td><span class="tag hard">复合 · 只判危险</span></td><td class="mono">run_code</td><td><span class="tag deny">拦</span></td><td>不扫代码文本里的路径，作用域交回内层调用，每个内层写/读各自重新判定。<b>派发随会话而变</b>，只能当纵深防御的加成</td></tr>
+        <tr><td><span class="tag hard">危险 · 全拦</span></td><td class="mono">mavis_agent_delete mavis_agent_update website_deploy miniapp</td><td><span class="tag deny">拦</span></td><td>账号级或对外可见的不可逆动作必须由用户亲自发起；Router 父会话不受此拦</td></tr>
+      </tbody>
+    </table>
+    <div class="note"><b>三条硬边界：</b>① 只约束被派工的子代理，父会话不受 worker scope 约束；② worker 自述完成不算完成；③ 账号级与对外不可逆操作不由 worker 执行。</div>
+  </section>
+
+  <section id="loop">
+    <div class="sec-head"><span class="n">05</span><h2>失败与成功的镜像沉淀</h2></div>
+    <div class="mirror">
+      <div class="mirror-col bad">
+        <h4>失败 → 错题本</h4>
+        <div class="who">.superagent/lessons/&lt;成员名&gt;.md</div>
+        <ul>
+          <li>准入四类：越界 / 数据错误 / 交付缺失 / 不可逆，或同型错误重复 ≥2 次</li>
+          <li>归因要公平 —— Router 给错的 brief 是 Router 的锅，改记 <span class="mono">_router.md</span></li>
+          <li>每成员有效规则 ≤15 条，超限先合并淘汰</li>
+          <li>派工时以 <span class="mono">PRIOR_LESSONS</span> 注入 worker 上下文</li>
+        </ul>
+      </div>
+      <div class="mirror-mid">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/><path d="M12 8v8M8 12l4 4 4-4"/></svg>
+      </div>
+      <div class="mirror-col ok">
+        <h4>成功 → 实战记录</h4>
+        <div class="who">methods/&lt;成员名&gt;.md 的「实战记录」段</div>
+        <ul>
+          <li>仅验收通过后由 <span class="mono">record-gate.mjs</span> 写入</li>
+          <li><span class="mono">verified_by</span> 必须在派工台账里有 <span class="mono">state=done</span> 凭据 —— 执行者不可自证</li>
+          <li>履历只影响<b>匹配</b>，绝不自动改写 <span class="mono">roster.json</span> 的 owns</li>
+          <li>归属变更由人改，走 git 记录</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="changes">
+    <div class="sec-head"><span class="n">06</span><h2>v0.5.0 → v0.5.1 的六项关键变更</h2></div>
+    <div class="changes">
+      <div class="chg">
+        <div class="hd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg><b>解析不到边界 = 拒绝</b></div>
+        <p>旧写法若解析不出 SCOPE，worker 会被拒绝操作。所有在用 brief 必须含一行可解析的 <span class="mono">SCOPE:</span> 路径清单。</p>
+      </div>
+      <div class="chg">
+        <div class="hd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg><b>通道判定变严</b></div>
+        <p>bash 按命令意图分流，glob/grep 按有效检索根判定，未登记的文件类工具名一律按写判定。对目录树外做 glob/grep 的步骤需补进 scope。</p>
+      </div>
+      <div class="chg">
+        <div class="hd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/></svg><b>验收方必须真实存在</b></div>
+        <p>写实战记录时 <span class="mono">verified_by</span> 必须在派工台账里有一条 <span class="mono">state=done</span> 记录，填陌生名字会被拒。历史履历不受影响（只在写入时校验）。</p>
+      </div>
+      <div class="chg">
+        <div class="hd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18M12 3v18"/><circle cx="12" cy="12" r="9"/></svg><b>编排层的锅不进成员账</b></div>
+        <p>「brief 给错」「派工给错」这类归因会被错题本闸门退回，改记进 <span class="mono">.superagent/lessons/_router.md</span>。</p>
+      </div>
+      <div class="chg">
+        <div class="hd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3M11 8v6M8 11h6"/></svg><b>主动触发粗筛重做</b></div>
+        <p>不再靠「长度够长 + 出现关键词」粗判：意图词必须与动作词在 <span class="mono">12 字符</span> 窗口内邻近共现，于是「批量导入」「并行度调高」这类伪信号不再误触发。命中判定导出成函数，能被回归直接断言，而不是只能看 stdout。</p>
+      </div>
+      <div class="chg">
+        <div class="hd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg><b>一条「平台事实」被自己推翻</b></div>
+        <p>曾断言「平台不对 <span class="mono">run_code</span> 容器派发 PreToolUse」——被金丝雀对照证伪：派发<b>随会话而变</b>，不是平台的恒定性质。结论已改为「复合层是纵深防御的加成，判定必须落内层通道」。</p>
+      </div>
+    </div>
+    <div class="note"><b>最易踩的一条：</b>新增的 matcher 项只在新会话生效，而<b>容器调用是否被派发随会话而变</b>。实测同一份 <span class="mono">run_code</span> 代码：10:22 的会话没进拦截，14:29 与 15:10 的会话当场被拒 —— 同一个形状结论相反，所以边界判定必须落在<b>内层通道</b>，复合层只能当纵深防御的加成。</div>
+  </section>
+
+  <section id="roster">
+    <div class="sec-head"><span class="n">07</span><h2>当前在册成员</h2></div>
+    <p class="dim" style="font-size:13.5px;margin-bottom:16px">成员是运行时按任务长出来的，不是预置的 —— 已有专精成员一律复用。归属以 <span class="mono">roster.json</span> 的 <span class="mono">owns</span> 为准，实战记录只作匹配参考。</p>
+    <div class="roster">
+      <div class="mem builtin"><div class="nm">explore<span class="kind">builtin</span></div><p>只读定位：找代码、找文件、摸清现状。不写文件。</p></div>
+      <div class="mem builtin"><div class="nm">worker<span class="kind">builtin</span></div><p>边界清晰的一次性生产：spec 明确的单点实现。</p></div>
+      <div class="mem builtin"><div class="nm">verifier<span class="kind">builtin</span></div><p>对抗性验证：独立复核产出、挑错。不亲手改，不接受看起来没问题。</p></div>
+      <div class="mem"><div class="nm">sa-mechanism-fix</div><p>编排机制边界判定改造：scope 语义、通道语义、brief 解析、台账名额回收</p></div>
+      <div class="mem"><div class="nm">sa-gate-integrity</div><p>记录闸门与统计口径：履历验收真实性、错题本归因公平、摘要取样公平性</p></div>
+      <div class="mem"><div class="nm">sa-plugin-release</div><p>插件包版本发布：版本与描述同步、CHANGELOG、面向使用者的 README</p></div>
+      <div class="mem"><div class="nm">sa-orchestration-audit</div><p>编排机制行为缺陷审计：沿 guard/dispatch/watchdog/gate 判定分支找可复现漏洞</p></div>
+      <div class="mem"><div class="nm">sa-context-trace</div><p>上下文注入与传递链路追踪：来源、注入时机、载体格式与接收方</p></div>
+    </div>
+  </section>
+
+  <footer>
+    <span>Super Agent Router v0.5.1 · 描述与思维导图</span>
+    <span>数据源：插件包 <span class="mono">C:/Users/yang2/.minimax/plugins/super-agent-router</span> 与项目 <span class="mono">.superagent/</span></span>
+  </footer>
+</div>
+
+<script>
+(function(){
+  var root = document.getElementById('mapRoot');
+  var svg  = document.getElementById('wires');
+  var core = document.getElementById('coreNode');
+  if(!root || !svg || !core) return;
+
+  var NS = 'http://www.w3.org/2000/svg';
+  function draw(){
+    while(svg.firstChild) svg.removeChild(svg.firstChild);
+    var rb = root.getBoundingClientRect();
+    svg.setAttribute('width', rb.width);
+    svg.setAttribute('height', rb.height);
+    svg.setAttribute('viewBox', '0 0 ' + rb.width + ' ' + rb.height);
+
+    var cb = core.getBoundingClientRect();
+    var cy = cb.top - rb.top + cb.height/2;
+    var cLeft  = cb.left - rb.left;
+    var cRight = cb.left - rb.left + cb.width;
+
+    var nodes = root.querySelectorAll('.node[data-side]');
+    for (var i=0;i<nodes.length;i++){
+      var n = nodes[i];
+      var nb = n.getBoundingClientRect();
+      var side = n.getAttribute('data-side');
+      var ny = nb.top - rb.top + nb.height/2;
+      var path, dot;
+
+      if(side === 'left'){
+        var endX = nb.right - rb.left;
+        path = 'M ' + cLeft + ' ' + cy + ' C ' + (cLeft - 34) + ' ' + cy + ', ' + (endX + 34) + ' ' + ny + ', ' + endX + ' ' + ny;
+        dot = [endX, ny];
+      } else {
+        var endX2 = nb.left - rb.left;
+        path = 'M ' + cRight + ' ' + cy + ' C ' + (cRight + 34) + ' ' + cy + ', ' + (endX2 - 34) + ' ' + ny + ', ' + endX2 + ' ' + ny;
+        dot = [endX2, ny];
+      }
+
+      var p = document.createElementNS(NS,'path');
+      p.setAttribute('d', path);
+      p.setAttribute('fill','none');
+      p.setAttribute('stroke', side === 'left' ? 'rgba(47,111,94,.38)' : 'rgba(201,123,63,.4)');
+      p.setAttribute('stroke-width','1.6');
+      p.setAttribute('stroke-linecap','round');
+      p.setAttribute('data-for', n.getAttribute('data-key'));
+      svg.appendChild(p);
+
+      var c = document.createElementNS(NS,'circle');
+      c.setAttribute('cx', dot[0]);
+      c.setAttribute('cy', dot[1]);
+      c.setAttribute('r','3.4');
+      c.setAttribute('fill', side === 'left' ? '#2f6f5e' : '#c97b3f');
+      c.setAttribute('data-for', n.getAttribute('data-key'));
+      svg.appendChild(c);
+    }
+  }
+
+  function isNarrow(){ return window.innerWidth <= 980; }
+  function render(){ if(!isNarrow()) draw(); }
+
+  render();
+  window.addEventListener('resize', render);
+  window.addEventListener('load', render);
+  if(document.fonts && document.fonts.ready){ document.fonts.ready.then(render); }
+
+  var nodes = root.querySelectorAll('.node[data-side]');
+  for(var j=0;j<nodes.length;j++){
+    (function(n){
+      n.addEventListener('mouseenter', function(){
+        root.classList.add('dimmed');
+        n.classList.add('hovered');
+        var key = n.getAttribute('data-key');
+        var items = svg.querySelectorAll('[data-for="' + key + '"]');
+        for(var k=0;k<items.length;k++){
+          items[k].setAttribute('stroke-width','2.4');
+          items[k].setAttribute('stroke', items[k].tagName === 'circle' ? '#c97b3f' : 'rgba(47,111,94,.75)');
+        }
+      });
+      n.addEventListener('mouseleave', function(){
+        root.classList.remove('dimmed');
+        n.classList.remove('hovered');
+        var items = svg.querySelectorAll('[data-for]');
+        for(var k=0;k<items.length;k++){
+          if(items[k].tagName === 'circle'){
+            items[k].setAttribute('stroke-width','');
+            items[k].setAttribute('fill', items[k].getAttribute('cx') < svg.viewBox.baseVal.width/2 ? '#2f6f5e' : '#c97b3f');
+          } else {
+            items[k].setAttribute('stroke-width','1.6');
+          }
+        }
+      });
+    })(nodes[j]);
+  }
+})();
+</script>
+</body>
+</html>
