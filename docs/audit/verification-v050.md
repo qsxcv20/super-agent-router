@@ -205,9 +205,9 @@
 - 说明：D-22 已闭环。
 
 ### V-25
-- 涉及对象：D-08 —— 5 类 hook 全绑父会话事件流，子会话不触发 SessionStart / UserPromptSubmit。
+- 涉及对象：D-08 —— 4 类 hook 全绑父会话事件流，子会话不触发 SessionStart / UserPromptSubmit。（此处原写「5 类」，实际是 4 类事件 / 7 条规则，2026-11-10 更正）
 - 复核方式：读 hooks.json 全文；核对 git diff --stat 里 skill 目录文档的改动量。
-- 证据：hooks.json 仍是 5 类事件（SessionStart、UserPromptSubmit、PreToolUse 四条、SubagentStop），没有新增面向子会话的事件——与「这是设计边界而非 bug」的判断一致；本轮把该边界写进 skill 目录的 SKILL 主文件与 references 下 brief/review/scope 三份文档（diffstat：SKILL 主文件 +5 行、brief +39、review +26、scope +65），并由契约 S10 规定缺陷统一收在台账、brief 只引编号不復述正文。
+- 证据：hooks.json 仍是 4 类事件 / 7 条规则（SessionStart、UserPromptSubmit、PreToolUse 四条、SubagentStop），没有新增面向子会话的事件——与「这是设计边界而非 bug」的判断一致；本轮把该边界写进 skill 目录的 SKILL 主文件与 references 下 brief/review/scope 三份文档（diffstat：SKILL 主文件 +5 行、brief +39、review +26、scope +65），并由契约 S10 规定缺陷统一收在台账、brief 只引编号不復述正文。
 - 判定：成立
 - 说明：D-08 以文档化与契约化处置，不是代码修复；判定基于文档 diff 存在且与实现不冲突。
 

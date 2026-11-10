@@ -10,7 +10,7 @@
 - Worker 声称做完却拿不出证据 → 交付被拦一次，要求补证据。
 - Worker 的边界算不出来 → **拒绝**，不是放行。
 
-当前版本：**v0.5.0**。
+当前版本：**v0.5.2**。
 
 ## 装在哪
 
@@ -204,6 +204,28 @@ v0.5.0 起，worker 的 scope 来自它自己 transcript 里的派工原文；�
 - brief 里必须有一行可解析的 `SCOPE:` 清单
 - 路径要写成规范路径，别用否定式表述
 - 派工的内容要确实进了 worker 的 transcript
+
+### 10. 派工被取消后，名额没还回来？
+
+派工被取消（或子会话异常退出）时**不会触发** `SubagentStop`，
+台账里的 `state` 会停在 `active`，一直占着并发名额（上限 6 个）到 TTL（2 小时）。
+表现是「机制突然不让我派工了」，但报的是「在飞派工已达上限」，不指向真正原因。
+
+取消后请显式释放：
+
+```powershell
+$env:PLUGIN_DATA = "$env:USERPROFILE\.minimax\v2\plugin-data\hooks\super-agent-router"
+node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\release-slot.mjs" '{"dispatch_id":"dsp_xxx"}'
+```
+
+释放某个父会话下的全部在飞派工：
+
+```powershell
+node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\release-slot.mjs" '{"parent_session_id":"mvs_xxx"}'
+```
+
+只把仍在飞的（`active`）记录翻成 `aborted`，已完成的记录不动。
+id 写错或台账读不出来时会直接报错退出，不会「假装释放成功」。
 
 ## 只读条目 `ro:`：想让它读，但不想让它改
 

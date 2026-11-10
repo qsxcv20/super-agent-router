@@ -3,6 +3,55 @@
 本文件记录 super-agent-router 插件包的版本变更。
 格式参考 Keep a Changelog，版本号遵循语义化版本。
 
+## [0.5.2] - 2026-11-10
+
+本版补一个**机制自带入口**：派工被取消后，把并发名额还回来。
+
+### 变更 1：新增 `scripts/release-slot.mjs`（D-28）
+
+**改了什么**
+
+- 新增 `scripts/release-slot.mjs`：显式释放仍在飞的派工名额。
+  用法：`node scripts/release-slot.mjs '{"dispatch_id":"dsp_xxx","reason":"parent_cancelled"}'`，
+  或按 `parent_session_id` 释放该父会话下全部在飞派工。
+- 只把 `state=active` 的记录翻成 `aborted`；`done` / `aborted` 的记录一个字节都不动。
+- 目标 id 不存在、或台账读不出来时**报错退出**，不静默「假装释放成功」。
+- 契约新增 **S6.2 第 5 条**：取消场景由发起方显式释放。
+- README 新增排查第 10 条「派工被取消后，名额没还回来？」，含可直接复制的命令。
+
+**为什么**
+
+派工被父会话 `task_stop` 取消、或子会话异常退出时，**不会触发 SubagentStop**。
+而名额回收的三条路里：正常结束不覆盖、TTL 兜底要等满 2 小时、读时自愈同样以 TTL 为准 ——
+于是这条记录一直占着并发名额（上限 6 个）到 TTL 结束。
+表现为「机制突然不让我派工了」，但报的是「在飞派工已达上限」，完全不指向真正原因。
+
+本轮实测就是这样撞上的：派工 `dsp_mwab22ks_4iccn9` 被取消后，父会话只能靠**一次性临时脚本**
+手工改台账才把名额拿回来 —— `markDispatchAborted` 虽然已导出，但没有任何 CLI / 文档告诉调用方怎么用。
+**机制没有入口，纪律就落不了地。**
+
+也顺手把一条走不通的路写进契约，免得下次再去试：台账条目里**没有子会话 id**，
+所以「自动探测子会话是否还活着」不可行；能自动拿到的只有终止事件，而取消场景下没有终止事件。
+
+**怎么验证**
+
+- 新增常驻回归 `.superagent/dispatch-release-test.mjs`（20 条断言）：
+  缺 payload / 非法 JSON / 台账读不出来 → 报错退出；释放单条 → state、end_reason、ended_at 落盘；
+  done / aborted 记录不动；未知 id → 报错且在飞数不变；按父会话批量释放；按成员收窄；
+  `--data-dir` 与 `PLUGIN_DATA` 两种入口；写回不丢字段。
+- 回归从九套变十套，仓库副本与安装副本均 0 FAIL。
+
+### 变更 2：更正一处长期传播的数字错误
+
+hooks.json 实际是 **4 类事件 / 7 条规则**（SessionStart、UserPromptSubmit、PreToolUse ×4 matcher、SubagentStop），
+但「5 类」这个说法在思维导图、`context-flow.md`、`verification-v050.md`、缺陷台账四处传了一整轮。
+四处已统一更正为「4 类事件 / 7 条规则」。
+
+### 变更 3：思维导图升到 v0.5.1 并修正
+
+`docs/super-agent-router-v0.5.1-思维导图.html`：版本号、S1~S11、触发语义、
+复合层「派发随会话而变」的更正（见 0.5.1 的 D-26 翻案），并补上 v0.5.1 的两张变更卡。
+
 ## [0.5.1] - 2026-11-10
 
 本版修两件事：**主动触发漏判 83%**，以及**一条上一版自己写错、已写进契约的平台事实**。

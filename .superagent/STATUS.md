@@ -264,3 +264,30 @@ M4 常真桩对照 → B 档 6 条 + C 档 7 条全红。每组都核对 sha256 
 
 **代价与教训**：这一单是我（父会话）直接实现的，不是派工完成 —— 原派工 35 分钟只读不写、零改动，
 被我叫停接手。**委派出去不等于有人在干活**；下次派工要么给更短的探索预算，要么自己上。
+
+### 四、v0.5.2：派工取消后的名额回收（D-28）
+
+**症状**：派工被父会话 `task_stop` 取消（或子会话异常退出）时，**不触发 SubagentStop**。
+名额回收的三条路全都覆盖不到：正常结束不覆盖、TTL 兜底要等满 2 小时、读时自愈同样以 TTL 为准。
+于是这条记录一直占着并发名额（上限 6 个），表现为「机制突然不让我派工了」，
+但报的是「在飞派工已达上限」，完全不指向真正原因。
+
+**实测**：派工 `dsp_mwab22ks_4iccn9`（`sa-mechanism-fix`）被取消后，台账 `state` 停在 `active`，
+父会话只能靠**一次性临时脚本**手工调 `markDispatchAborted` 才把名额拿回来。
+`markDispatchAborted` 虽然已从 lib.mjs 导出，但**没有任何 CLI / 脚本 / 文档告诉调用方怎么用** ——
+机制没有入口，纪律就落不了地。
+
+**修法**：新增 `plugin/scripts/release-slot.mjs`（契约 S6.2 第 5 条）：
+
+```powershell
+node scripts/release-slot.mjs '{"dispatch_id":"dsp_xxx","reason":"parent_cancelled"}'
+node scripts/release-slot.mjs '{"parent_session_id":"mvs_xxx"}'
+```
+
+只把 `active` 翻成 `aborted`，`done` / `aborted` 的记录一个字节都不动；
+目标 id 不存在或台账读不出来时**报错退出**，不静默「假装释放成功」——
+否则调用方以为名额放掉了，实际还占着。
+常驻回归 `.superagent/dispatch-release-test.mjs`（20 条断言），回归从九套变十套，两份副本均 0 FAIL。
+
+**顺手更正的一处长期错误**：hooks.json 实际是 **4 类事件 / 7 条规则**，
+但「5 类」在思维导图、`context-flow.md`、`verification-v050.md`、缺陷台账四处传了一整轮，四处已统一改掉。

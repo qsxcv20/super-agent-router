@@ -19,7 +19,7 @@
 | D-05 | RG-04 | P0 | 机制层 | dispatch 去重键依赖 turn_id，载荷缺该字段时旧记录被整条抹掉 → 前一个 worker 的 scope 从台账消失 |
 | D-06 | CF-03 | P1 | 契约层 | 错题本规则/实战记录只以 additionalContext 进父会话，从不进子会话 → 教训前置靠 Router 手抄，无代码强制 |
 | D-07 | CF-05 | P1 | 机制层 | extractScope 对写法敏感，SCOPE 行写法稍变就漏收 → 白名单变小等于放行 |
-| D-08 | CF-07 | P1 | 契约层 | 5 类 hook 全部绑在父会话事件流，子会话不触发 SessionStart / UserPromptSubmit |
+| D-08 | CF-07 | P1 | 契约层 | 4 类 hook（7 条规则）全部绑在父会话事件流，子会话不触发 SessionStart / UserPromptSubmit |
 | D-09 | RG-05 | P1 | 机制层 | 闸门二只按同一父会话比对，嵌套派工与第二个 Router 会话都取不到在飞记录 |
 | D-10 | RG-07 | P1 | 机制层 | 只有 SubagentStop 一条回收通路；派工被取消/中断/异常退出时名额 2 小时不回收 |
 | D-11 | RG-08 | P1 | 机制层 | watchdog 的关键词式证据判定可被「搞定了，测试通过」这类空话绕过 |
@@ -36,6 +36,8 @@
 | D-22 | RG-15 | P2 | 机制层 | glob/grep 显式传 path 目录时语义不稳（带尾斜杠与不带结果不同） |
 | D-23 | RG-17 | P2 | 契约层 | 台账写了 4 个字段，但全仓无任何判定读取 → 台账写了无人读 |
 | D-24 | RG-18 | P2 | 契约层 | 实战记录摘要按 roster 顺序截断 6 名，排位靠后的成员记录结构性不可见 |
+| D-27 | 用户反馈 | P0 | 机制层 | 主动触发粗筛漏判 83%：口语化编排请求几乎全部静默放行，Router 不知道编排机制存在 |
+| D-28 | 本轮实测 | P2 | 机制层 | 派工被取消/中断时不触发 SubagentStop，并发名额泄漏到 TTL（2 小时），机制没有可用释放入口 |
 
 **合并与剔除说明**
 
@@ -131,7 +133,7 @@
 - 来源：CF-05 ｜ 严重度：P1 ｜ 归属层：机制层
 
 ### D-08
-- 触发条件：`plugin/hooks/hooks.json` 声明的 5 类 hook（SessionStart / UserPromptSubmit / PreToolUse ×3 matcher / SubagentStop）全部绑定在**父会话 Router 的事件流**上；子会话不触发 SessionStart。
+- 触发条件：`plugin/hooks/hooks.json` 声明的 4 类 hook / 7 条规则（SessionStart / UserPromptSubmit / PreToolUse ×4 matcher / SubagentStop）全部绑定在**父会话 Router 的事件流**上；子会话不触发 SessionStart。
 - 影响：子会话**结构性拿不到** SessionStart 的编排协议注入（`session-start.mjs:19-36` 的「本会话已启用 Super-agent 编排机制 / 何时该编排」整块）。这不是缺陷本身（worker 本就不该编排），但它意味着：**唯一能让模型知道「存在编排机制」的那段上下文只有 Router 有**；worker 若被要求「按协议自述」或需要转派，缺少协议原文，只能靠 brief 正文里 Router 转述的片段。
 - 复现步骤：1) 在 `hooks.json` 列出全部 hook 事件；2) 对照 9 个 transcript 样本，找出带 `subtype:"plugin_hook_context"` 的会话；3) 观察该 subtype 仅出现在两个**父会话**（`4efc02c8` 第 2 行、`76a305b5` 第 2 行），7 个子会话均无。
 - 证据：`plugin/hooks/hooks.json:3-14`（SessionStart→session-start.mjs）、`:15-26`（UserPromptSubmit→gate.mjs）、`:27-72`（PreToolUse：matcher `task`→dispatch.mjs、`write|edit|multiedit|notebookedit|bash`→guard.mjs、`read|glob|grep|list|search`→guard.mjs、`mavis_agent_delete|mavis_agent_update|website_deploy|miniapp|miniapp_publish`→guard.mjs）、`:73-84`（SubagentStop→watchdog.mjs）——**无任何面向子会话的 hook 事件**。真实样本对照：`73f33cbca067dd3d55331579664d091d.compatible.jsonl`（本会话，sa-context-trace）全 77 行类型分布为 `{"user/-":46,"assistant/-":31}`，**无一条 `plugin_hook_context`**；`4efc02c8fee262d90426ad814bcb1f11.compatible.jsonl` 全 89 行分布为 `{"system/compactionSummary":1,"system/plugin_hook_context":1,"system/session_identity_reminder":1,"assistant/-":43,"user/-":43}`。另：`76a305b5...compatible.jsonl` 与 `4efc02c8...compatible.jsonl` 的 `plugin_hook_context` 块只含 SessionStart 文案 + 实战记录摘要，**不含** `本轮按编排流程处理`（gate 产物）——说明两条注入线在父会话也是彼此独立、时机不同的两条路径。
@@ -385,6 +387,17 @@
 - 修法方向：① INTENT 补口语动词短语；② 去掉 `length > 40` 硬门槛，改用「信号词 + 动作性」判定；③ 判定函数从 `gate.mjs` 抽到 `lib.mjs` 导出，使回归能**直接 import 断言**；④ 未命中时**条件式**兜底注入一行极短提示（仅当「roster 存在且有专项成员且该成员有实战记录」时），对单点小改的工作区零成本；⑤ 载荷解析失败**不静默**（`parseInput` → `parseInputStrict` 或留痕）。契约侧新增「触发语义」条款（父会话落）。
 - 还需要什么：需要平台侧确认 UserPromptSubmit 的派发时机与载荷形状是否稳定 —— 若载荷字段名变化，`prompt` 取空会导致「永远不命中」的静默失效（与 D-26 同族的「触发链路」问题）。
 - 来源：用户反馈「主动触发还有其他的」后的定点排查 ｜ 严重度：P0 ｜ 归属层：机制层
+
+### D-28
+- 触发条件：父会话取消派工（`task_stop`）、中断派工，或子会话异常退出（非正常结束）。
+- 影响：**并发名额泄漏到 TTL（2 小时）为止**。`MAX_ACTIVE_DISPATCHES = 6`，单会话连派 6 个 worker 再取消几个，后续派工会以「在飞派工已达上限」被拒 —— 表现为「机制突然不让我派工了」，而报错完全不指向真正原因。属于**活性问题**（不是安全问题：多占名额不放行，不放行越权操作）。
+- 复现步骤：1) 父会话派出一个 worker；2) 用 `task_stop` 取消它；3) 读台账 `PLUGIN_DATA/dispatches.json`，该条 `state` 仍是 `active`；4) 在 TTL 内继续派满 6 个，第 7 个被「在飞派工已达上限」拒绝。
+- 证据：本轮实测 —— 派工 `dsp_mwab22ks_4iccn9`（`sa-mechanism-fix`）被父会话 `task_stop` 取消后，台账 `state` 长时间停在 `active`，父会话只能靠**一次性临时脚本**手工调 `markDispatchAborted` 才把名额拿回来（`end_reason=parent_cancelled_task_no_delivery`）。**机制本身没有可用入口** —— `markDispatchAborted` 虽已从 lib.mjs 导出，但没有任何 CLI / 脚本 / 文档告诉调用方怎么用；契约 S6.2 第 2 条的三条路（正常结束 / 超时兜底 / 读时自愈）**没有一条覆盖取消场景**。
+- 状态：**已修复（v0.5.2）**
+- 修复后证据：新增 `plugin/scripts/release-slot.mjs`（契约 S6.2 第 5 条）+ 常驻回归 `.superagent/dispatch-release-test.mjs`（20 条断言，全绿）；入口 `node scripts/release-slot.mjs '{"dispatch_id":"dsp_xxx"}'` 或按 `parent_session_id` 批量释放。
+- 修法方向：① 契约 S6.2 补第 5 条：取消场景由**发起方显式释放**，入口由插件自带；② 释放只把 `active` 翻成 `aborted`，`done` / `aborted` 的记录一个字节都不动；③ 目标不存在或台账读不出来时**报错退出**，不许静默成功 —— 否则调用方以为名额放掉了，实际还在占着；④ 台账条目里**没有子会话 id**，所以「自动探测子会话是否还活着」不可行，能自动拿到的只有终止事件而取消场景没有终止事件 —— 这条写进契约，免得下次又去做自动探测。
+- 还需要什么：若平台将来提供「派工被取消」的事件（类似 SubagentStop 的取消态），应改为**事件驱动自动回收**，本入口退化为兜底。当前无平台事件可用。
+- 来源：本轮「主动触发还有其他的」定点排查中实测暴露 ｜ 严重度：P2 ｜ 归属层：机制层
 
 ## 五、v0.5.0 修复状态（2026-11-10）
 

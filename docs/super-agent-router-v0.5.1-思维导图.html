@@ -305,7 +305,7 @@
 
   <section id="hooks">
     <div class="sec-head"><span class="n">03</span><h2>Hook 接线与运行时脚本</h2></div>
-    <p class="dim" style="font-size:13.5px;margin-bottom:16px">插件全部能力挂在父会话（Router）的 5 类事件上。子会话不会触发 <span class="mono">SessionStart</span> 与 <span class="mono">UserPromptSubmit</span> —— 所以对 worker 而言，<strong>brief 是唯一的协议载体</strong>。</p>
+    <p class="dim" style="font-size:13.5px;margin-bottom:16px">插件全部能力挂在父会话（Router）的 4 类事件上。子会话不会触发 <span class="mono">SessionStart</span> 与 <span class="mono">UserPromptSubmit</span> —— 所以对 worker 而言，<strong>brief 是唯一的协议载体</strong>。</p>
     <table class="tbl">
       <thead><tr><th style="width:15%">事件</th><th style="width:26%">matcher</th><th style="width:22%">脚本</th><th>作用</th></tr></thead>
       <tbody>
