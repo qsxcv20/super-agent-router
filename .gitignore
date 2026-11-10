@@ -27,6 +27,9 @@ node_modules_*.md
 _rm*.mjs
 .git-sync-tmp/
 
+# 验收工装的临时草稿区（独立验收方的工作目录，用完即删）
+docs/audit/.tmp-*/
+
 # 敏感文件（保险起见）
 .env
 .env.*

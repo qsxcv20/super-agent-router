@@ -116,12 +116,21 @@ MCode 会自动扫描本地插件目录，无需重启。
 ### 开发者
 
 ```bash
+node tools/run-tests.mjs --all --root plugin --repo .   # 十一套全跑（仓库副本）
+node tools/run-tests.mjs --all --repo .                  # 十一套全跑（安装副本）
+node tools/run-tests.mjs scope-amend-test --repo .       # 单跑一套
+```
+
+单套也可以直接跑：
+
+```bash
 node tests/e2e-test.mjs      # Hook 契约
 node tests/roster-test.mjs   # 造人纪律
 node tests/lessons-test.mjs  # 错题本纪律
 node tests/guard-test.mjs    # 越界判定
 node tests/scope-test.mjs    # 作用域边界
 node tests/records-test.mjs  # 履历机制
+node tests/scope-amend-test.mjs  # 权限自动审核与等级
 ```
 
 ---
@@ -133,19 +142,30 @@ node tests/records-test.mjs  # 履历机制
 ├── plugin/                      # 插件包（复制到 ~/.minimax/plugins/）
 │   ├── .minimax-plugin/plugin.json
 │   ├── hooks/hooks.json          # 7 个 handler（含 SessionStart）
-│   ├── scripts/                  # 10 个脚本，纪律的执行者
+│   ├── scripts/                  # 13 个脚本，纪律的执行者
 │   └── skills/super-agent-router/
 │       ├── SKILL.md              # Router 协议 + 铁律
 │       └── references/           # teams routing brief bootstrap review scope records
 │
-├── .superagent/                 # 项目状态层（每个项目各一份）
-│   ├── roster.json               # 专项名录，路由的唯一依据
+├── .superagent/                 # 项目状态层（每个项目各一份；成员的私有记忆）
+│   ├── roster.json               # 专项名录 + 权限等级（路由的唯一依据）
 │   ├── methods/                  # 专项方法论 + 实战记录（运行时现场写）
 │   ├── lessons/                  # 错题本（每成员一份）
 │   ├── incidents/                # L0 原始事故
-│   ├── changes.log               # 自动改动留痕
+│   ├── changes.log               # 自动改动留痕（含提权留痕）
 │   ├── agent-snapshots/          # 改 prompt 前的快照
-│   └── *-test.mjs                # 六套回归测试
+│   └── STATUS.md                 # 项目当前状态
+│
+├── tests/                       # 十一套回归测试（项目资产，不是私有记忆）
+│   └── *-test.mjs
+│
+├── tools/                       # 工装
+│   ├── run-tests.mjs             # 验收工装（自动发现 tests/*-test.mjs）
+│   ├── deploy-plugin.mjs         # 部署到安装目录
+│   ├── sync-github.mjs           # 同步到 GitHub
+│   └── verify-github.mjs         # 逐文件核对远端内容
+│
+├── docs/audit/                  # 独立验收与专项审计报告
 │
 └── README.md
 ```
