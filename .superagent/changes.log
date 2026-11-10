@@ -18,3 +18,15 @@
 2026-11-10T11:17:21.786Z | scope | dsp_mwaiymac_wmd8sb | deny req_mwajhmis_4v5e2u | by mvs_9bdda202ae274c909a5b4352fc45a471 | 编排层私有状态目录不开放写授权（契约 S13.3 第一条例外）—— 该专项已交付，此请求作废；本轮所有批准/提权都落在沙箱账里。
 2026-11-10T11:17:22.420Z | scope | dsp_mwahmje8_jquprp | deny req_mwajue95_1f7oda | by mvs_9bdda202ae274c909a5b4352fc45a471 | 编排层私有状态目录不开放写授权（契约 S13.3 第一条例外）—— 该专项已交付，此请求作废；本轮所有批准/提权都落在沙箱账里。
 2026-11-10T11:17:42.934Z | scope | dsp_mwalhxky_jo7zbh | grant req_mwali7f2_hfgg9r | by mvs_9bdda202ae274c909a5b4352fc45a471 | + ro: .
+2026-11-10T12:57:47.687Z | tier | sa-context-trace | full -> scoped | by mvs_9bdda202ae274c909a5b4352fc45a471
+2026-11-10T12:57:48.470Z | tier | sa-context-trace | scoped -> full | by mvs_9bdda202ae274c909a5b4352fc45a471
+2026-11-10T12:58:17.533Z | tier | worker | full -> scoped | by mvs_9bdda202ae274c909a5b4352fc45a471
+2026-11-10T12:58:18.425Z | tier | worker | scoped -> full | by mvs_9bdda202ae274c909a5b4352fc45a471
+2026-11-10T12:58:19.305Z | tier | sa-plugin-release | full -> scoped | by mvs_9bdda202ae274c909a5b4352fc45a471
+2026-11-10T12:58:20.240Z | tier | sa-plugin-release | scoped -> full | by mvs_9bdda202ae274c909a5b4352fc45a471
+2026-11-10T12:58:21.119Z | tier | sa-orchestration-audit | full -> scoped | by mvs_9bdda202ae274c909a5b4352fc45a471
+2026-11-10T12:58:21.955Z | tier | sa-orchestration-audit | scoped -> full | by mvs_9bdda202ae274c909a5b4352fc45a471
+2026-11-10T12:58:22.823Z | tier | sa-mechanism-fix | full -> scoped | by mvs_9bdda202ae274c909a5b4352fc45a471
+2026-11-10T12:58:23.929Z | tier | sa-mechanism-fix | scoped -> full | by mvs_9bdda202ae274c909a5b4352fc45a471
+2026-11-10T12:58:24.748Z | tier | sa-gate-integrity | full -> scoped | by mvs_9bdda202ae274c909a5b4352fc45a471
+2026-11-10T12:58:25.491Z | tier | sa-gate-integrity | scoped -> full | by mvs_9bdda202ae274c909a5b4352fc45a471

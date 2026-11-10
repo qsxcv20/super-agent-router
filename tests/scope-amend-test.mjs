@@ -25,6 +25,14 @@ const DISPATCH = path.join(PLUGIN_ROOT, 'scripts', 'dispatch.mjs');
 let fail = 0;
 const ok = (l, c, e = '') => { if (!c) fail++; console.log((c ? 'PASS ' : 'FAIL ') + l + (e ? ' :: ' + e : '')); };
 
+// 变异矩阵入口放在**最前面**（与 tests/e2e-test.mjs 的 SAR_MUTATION 约定一致）：
+// 打开时只跑矩阵并退出 —— 矩阵跑的是「被重跑的套件」的输出，
+// 本进程自己的正常断言不该混进同一份输出里（那会让第三方分不清哪条红是变异造成的）。
+// 函数声明会提升到模块作用域顶部，所以这里调用它没问题。
+if (process.env.SAR_MUTATION_D75 === '1') {
+  await runD75MutationMatrix();
+}
+
 // 造一份子会话 transcript（brief 的载体）。
 // 护栏的边界就是从这份 transcript 的 brief 里解析出来的 ——
 // 每个子会话一份，才测得出「等级快照跟着派工走」这类按会话生效的判定。
@@ -621,6 +629,418 @@ function legacyProbe(env, rows) {
     '--read', '--approver', 'mvs_parent'], { PLUGIN_DATA: envQ.DATA, MINIMAX_PROJECT_DIR: envQ.PROJ });
   ok('私有记忆目录的 --dispatch --add 扩权被拒',
     gq.code === 1 && gq.out.ok === false, JSON.stringify(gq.out).slice(0, 200));
+}
+
+
+// ── 15. D-75：只读 → 可写的升级必须**显式**，不许静默 ──────
+//
+// 缺陷（D-75）：管理员用 --grant 批准一条「只读条目上的写请求」时，
+// 只读条目会被追加一条可写条目 ⇒ **只读被静默升级成可写**，
+// 而批准回执与变更账里都看不出这次升级（D-40 只改了拦截措辞，没动扩权入口）。
+//
+// 口径（父会话已定，机制照做）：
+//   · 升级**能力保留**（不堵死批准权 —— 堵死会与「成员给管理员做事必须有权限」相反）；
+//   · 升级**必须显式**：回执与变更账都要写明「哪个路径从哪个只读条目升级成了可写」。
+//
+// 这些断言钉的是「**显式**」，不是「不许升级」——
+// 断言里既有「回执必须写出升级」，也有「升级后写确实放行」（证明能力没被堵死）。
+//
+// 标签统一用 'D-75 ' 前缀：变异体脚本按这个前缀挑断言（回退显式化 → 这些断言必须变红）。
+
+// 把子会话 transcript 的 brief SCOPE 改成指定内容。
+// brief 与派工记录的 SCOPE 要一致 —— guard 靠 scope 重叠把 worker 挂到它那条派工上。
+function setBriefScope(env, scopeLine) {
+  fs.writeFileSync(env.TR, JSON.stringify({
+    uuid: 'p-9', parentUuid: null, sessionId: 'mvs_child',
+    timestamp: new Date().toISOString(), type: 'user',
+    message: { role: 'user', content: [{ type: 'text', text: [
+      '<agent-context>', '  agentName: worker', '  PARENT SESSION: mvs_parent', '</agent-context>',
+      '任务：按 brief 执行', scopeLine
+    ].join('\n') }] }
+  }) + '\n', 'utf8');
+}
+
+function changesLogOf(env) {
+  const p = path.join(env.PROJ, '.superagent', 'changes.log');
+  return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
+}
+
+// ① --grant 批准「只读条目上的写请求」→ 回执显式写出升级 + 来源条目
+{
+  const env = makeEnv();
+  const scopeLine = 'SCOPE: ro: docs/other.md, src/app.ts';
+  setBriefScope(env, scopeLine);
+  dispatchWithScope(env, scopeLine);
+  // worker 写只读路径 → 被拦并记账（mode=write）
+  const gw = guard(env, 'write', { file_path: 'docs/other.md' });
+  ok('D-75 准备：worker 写只读路径被拦', gw.decision === 'deny', gw.reason.slice(0, 160));
+  const led = ledger(env);
+  const req = (led.scope_requests || [])[0] || {};
+  ok('D-75 准备：越界请求被记成写请求',
+    String(req.mode) === 'write' && JSON.stringify(req.targets || []).includes('docs/other.md'),
+    JSON.stringify(req).slice(0, 200));
+  const rid = String(req.request_id || '');
+
+  const gr = run(AMEND, ['--grant', rid, '--approver', 'mvs_parent'],
+    { PLUGIN_DATA: env.DATA, MINIMAX_PROJECT_DIR: env.PROJ });
+  ok('D-75 --grant 批准成功', gr.code === 0 && gr.out.ok === true, JSON.stringify(gr.out).slice(0, 200));
+
+  // 断言 1：回执里**显式**标明该路径从只读升级为可写（新增字段，既有字段语义不变）
+  const upPaths = Array.isArray(gr.out.upgraded_paths) ? gr.out.upgraded_paths : null;
+  ok('D-75 回执里有 upgraded_paths 字段且含被升级的路径',
+    Array.isArray(upPaths) && upPaths.includes('docs/other.md'),
+    JSON.stringify(gr.out.upgraded_paths));
+  const upDetail = Array.isArray(gr.out.upgraded_from_readonly) ? gr.out.upgraded_from_readonly : [];
+  const upOne = upDetail.find((u) => u && u.path === 'docs/other.md');
+  ok('D-75 回执指明升级是从哪个只读条目来的',
+    !!upOne && String(upOne.from_entry || '') === 'ro: docs/other.md' &&
+    String(upOne.to_entry || '') === 'docs/other.md',
+    JSON.stringify(upDetail).slice(0, 240));
+  ok('D-75 回执的 upgrade_notice 明写「从只读条目升级为可写」',
+    /只读/.test(String(gr.out.upgrade_notice || '')) && /可写/.test(String(gr.out.upgrade_notice || '')) &&
+    String(gr.out.upgrade_notice || '').includes('ro: docs/other.md'),
+    String(gr.out.upgrade_notice || '').slice(0, 200));
+
+  // 断言 2：既有字段语义不变（added 仍是新增条目列表；note 仍说明「读请求只授读」）
+  ok('D-75 既有字段语义不变：added 仍是新增的可写条目列表',
+    JSON.stringify(gr.out.added) === JSON.stringify(['docs/other.md']),
+    JSON.stringify(gr.out.added));
+  ok('D-75 既有字段语义不变：note 仍写明「读请求只授读（ro: 条目）」',
+    String(gr.out.note || '').includes('读请求只授读（ro: 条目）'),
+    String(gr.out.note || '').slice(0, 200));
+
+  // 断言 3：升级能力**保留**（不堵死批准权）—— 批准后写确实放行
+  const led2 = ledger(env);
+  ok('D-75 升级后派工 scope 里出现了可写条目',
+    JSON.stringify((led2.dispatches || [])[0].scope || []).includes('"docs/other.md"'),
+    JSON.stringify((led2.dispatches || [])[0].scope));
+  const gAfter = guard(env, 'write', { file_path: 'docs/other.md' });
+  ok('D-75 升级能力保留：批准后该路径的写请求放行（没把批准权堵死）',
+    gAfter.decision !== 'deny', gAfter.reason.slice(0, 160));
+
+  // 断言 4：变更账那一行**一眼看出**「只读 → 可写」并含来源条目
+  const log = changesLogOf(env);
+  const line = log.split(/\r?\n/).find((l) => l.includes('grant ' + rid)) || '';
+  ok('D-75 变更账那一行写出「readonly -> writable」的升级',
+    /upgrade readonly -> writable/.test(line), line.slice(0, 240));
+  ok('D-75 变更账那一行含来源只读条目',
+    /from: ro: docs\/other\.md/.test(line), line.slice(0, 240));
+  ok('D-75 变更账那一行仍保留批准人与时间（既有口径不变）',
+    line.includes('by mvs_parent') && /\d{4}-\d{2}-\d{2}T/.test(line), line.slice(0, 240));
+
+  // 断言 5：台账里也留了升级痕迹（验收时不用只看回执）
+  const led3 = ledger(env);
+  const reqRow = (led3.scope_requests || [])[0] || {};
+  ok('D-75 台账里也记下了升级来源',
+    JSON.stringify(reqRow.upgraded_from_readonly || []).includes('ro: docs/other.md'),
+    JSON.stringify(reqRow.upgraded_from_readonly || []).slice(0, 200));
+}
+
+// ② 读请求仍然只授读 —— 口径不得被本次改动带偏
+{
+  const env = makeEnv();
+  const scopeLine = 'SCOPE: src/app.ts';
+  setBriefScope(env, scopeLine);
+  dispatchWithScope(env, scopeLine);
+  guard(env, 'read', { path: 'docs/other.md' });
+  const led = ledger(env);
+  const req = (led.scope_requests || [])[0] || {};
+  ok('D-75 准备：越界请求被记成读请求', String(req.mode) === 'read',
+    JSON.stringify(req).slice(0, 200));
+  const gr = run(AMEND, ['--grant', String(req.request_id || ''), '--approver', 'mvs_parent'],
+    { PLUGIN_DATA: env.DATA, MINIMAX_PROJECT_DIR: env.PROJ });
+  ok('D-75 读请求批准成功', gr.code === 0 && gr.out.ok === true, JSON.stringify(gr.out).slice(0, 200));
+  ok('D-75 读请求只授读：派工 scope 里加的是 ro: 条目',
+    JSON.stringify((ledger(env).dispatches || [])[0].scope || []).includes('ro: docs/other.md'),
+    JSON.stringify((ledger(env).dispatches || [])[0].scope));
+  ok('D-75 读请求批准**不**产生升级声明（只授读，没有只读→可写）',
+    Array.isArray(gr.out.upgraded_paths) && gr.out.upgraded_paths.length === 0,
+    JSON.stringify(gr.out.upgraded_paths));
+  const gRead = guard(env, 'write', { file_path: 'docs/other.md' });
+  ok('D-75 批准读不等于批准写：该路径的写请求仍被拦',
+    gRead.decision === 'deny', gRead.reason.slice(0, 160));
+}
+
+// ③ --dispatch --add 与已有只读条目冲突 → 同样显式说明
+{
+  const env = makeEnv();
+  const scopeLine = 'SCOPE: ro: docs/other.md, src/app.ts';
+  setBriefScope(env, scopeLine);
+  dispatchWithScope(env, scopeLine);
+  const did = (ledger(env).dispatches || [])[0].dispatch_id;
+  const ad = run(AMEND, ['--dispatch', did, '--add', 'docs/other.md', '--approver', 'mvs_parent'],
+    { PLUGIN_DATA: env.DATA, MINIMAX_PROJECT_DIR: env.PROJ });
+  ok('D-75 --dispatch --add 成功', ad.code === 0 && ad.out.ok === true,
+    JSON.stringify(ad.out).slice(0, 200));
+  const adUp = Array.isArray(ad.out.upgraded_from_readonly) ? ad.out.upgraded_from_readonly : [];
+  ok('D-75 --dispatch --add 与已有只读条目冲突时显式说明升级',
+    JSON.stringify(ad.out.upgraded_paths || []).includes('docs/other.md') &&
+    JSON.stringify(adUp).includes('ro: docs/other.md'),
+    JSON.stringify(ad.out.upgraded_from_readonly || []).slice(0, 240));
+  const adLog = changesLogOf(env);
+  const adLine = adLog.split(/\r?\n/).find((l) => l.includes('add-entry')) || '';
+  ok('D-75 --dispatch --add 的变更账也写出升级与来源条目',
+    /upgrade readonly -> writable/.test(adLine) && /from: ro: docs\/other\.md/.test(adLine),
+    adLine.slice(0, 240));
+}
+
+// ④ 只读**目录**条目覆盖下的写请求 → 升级也要被认出来
+{
+  const env = makeEnv();
+  const scopeLine = 'SCOPE: ro: docs/, src/app.ts';
+  setBriefScope(env, scopeLine);
+  dispatchWithScope(env, scopeLine);
+  guard(env, 'write', { file_path: 'docs/other.md' });
+  const led = ledger(env);
+  const req = (led.scope_requests || [])[0] || {};
+  const gr = run(AMEND, ['--grant', String(req.request_id || ''), '--approver', 'mvs_parent'],
+    { PLUGIN_DATA: env.DATA, MINIMAX_PROJECT_DIR: env.PROJ });
+  const det = Array.isArray(gr.out.upgraded_from_readonly) ? gr.out.upgraded_from_readonly : [];
+  const one = det.find((u) => u && u.path === 'docs/other.md');
+  ok('D-75 只读目录条目下的写请求：升级被认出来，来源是那个目录条目',
+    !!one && String(one.from_entry || '') === 'ro: docs/',
+    JSON.stringify(det).slice(0, 240));
+}
+
+// ⑤ 加可写**目录**条目罩住已有只读文件条目 → 也是升级（否则这是一条残留的静默升级路）
+{
+  const env = makeEnv();
+  const scopeLine = 'SCOPE: ro: docs/other.md, src/app.ts';
+  setBriefScope(env, scopeLine);
+  dispatchWithScope(env, scopeLine);
+  const did = (ledger(env).dispatches || [])[0].dispatch_id;
+  const ad = run(AMEND, ['--dispatch', did, '--add', 'docs/', '--approver', 'mvs_parent'],
+    { PLUGIN_DATA: env.DATA, MINIMAX_PROJECT_DIR: env.PROJ });
+  const det = Array.isArray(ad.out.upgraded_from_readonly) ? ad.out.upgraded_from_readonly : [];
+  const one = det.find((u) => u && u.path === 'docs/other.md');
+  ok('D-75 可写目录条目罩住只读文件条目：升级被认出来',
+    !!one && String(one.from_entry || '') === 'ro: docs/other.md' &&
+    String(one.to_entry || '') === 'docs/',
+    JSON.stringify(det).slice(0, 240));
+}
+
+// ⑥ 路径写法不同（'./docs/other.md'）也必须被认出来 ——
+//
+// 为什么：升级检测早先按**写法逐字**比，于是管理员批一条 './docs/other.md'
+// 就能把只读条目罩着的那个文件静默升级成可写，而回执与变更账都看不出。
+// 同一个文件的不同写法必须归一后再比 —— 这条断言钉住的就是这个归一。
+{
+  const env = makeEnv();
+  const scopeLine = 'SCOPE: ro: docs/other.md, src/app.ts';
+  setBriefScope(env, scopeLine);
+  dispatchWithScope(env, scopeLine);
+  // worker 用 './docs/other.md' 这种写法请求写 → 被拦并记账
+  const gw = guard(env, 'write', { file_path: './docs/other.md' });
+  ok('D-75 准备：别名写法的写请求被拦', gw.decision === 'deny', gw.reason.slice(0, 160));
+  const led = ledger(env);
+  const req = (led.scope_requests || [])[0] || {};
+  const gr = run(AMEND, ['--grant', String(req.request_id || ''), '--approver', 'mvs_parent'],
+    { PLUGIN_DATA: env.DATA, MINIMAX_PROJECT_DIR: env.PROJ });
+  const det = Array.isArray(gr.out.upgraded_from_readonly) ? gr.out.upgraded_from_readonly : [];
+  ok('D-75 路径写法不同（./docs/other.md）的升级仍被认出来',
+    det.length > 0 && det.some((u) => u && String(u.from_entry || '') === 'ro: docs/other.md'),
+    JSON.stringify(det).slice(0, 240));
+  ok('D-75 同一文件的不同写法不重复记账（只报一条升级）',
+    det.length === 1, JSON.stringify(det).slice(0, 240));
+}
+
+// ⑦ 变更账写成功没有 → 回执必须说出来（不许静默）
+//
+// 追加写失败时（目录不存在、只读盘……）以前是**静默吞掉**的：
+// 回执说「ok: true」，但变更账里根本没有这一行 ——
+// 「升级已记入变更账」就成了一句没人验证过的话。
+{
+  const env = makeEnv();
+  const scopeLine = 'SCOPE: ro: docs/other.md, src/app.ts';
+  setBriefScope(env, scopeLine);
+  dispatchWithScope(env, scopeLine);
+  guard(env, 'write', { file_path: 'docs/other.md' });
+  const led = ledger(env);
+  const req = (led.scope_requests || [])[0] || {};
+  const gr = run(AMEND, ['--grant', String(req.request_id || ''), '--approver', 'mvs_parent'],
+    { PLUGIN_DATA: env.DATA, MINIMAX_PROJECT_DIR: env.PROJ });
+  ok('D-75 回执带 audit_logged 字段（变更账写成功没有）',
+    typeof gr.out.audit_logged === 'boolean', JSON.stringify(gr.out.audit_logged));
+  ok('D-75 变更账确实写成功时 audit_logged 为 true',
+    gr.out.audit_logged === true, JSON.stringify(gr.out.audit_logged));
+}
+
+// ⑧ 重复加同一条目 → 显式说明「本来就在」（不许静默的 no-op）
+{
+  const env = makeEnv();
+  const scopeLine = 'SCOPE: ro: docs/other.md, src/app.ts';
+  setBriefScope(env, scopeLine);
+  dispatchWithScope(env, scopeLine);
+  const did = (ledger(env).dispatches || [])[0].dispatch_id;
+  run(AMEND, ['--dispatch', did, '--add', 'docs/other.md', '--approver', 'mvs_parent'],
+    { PLUGIN_DATA: env.DATA, MINIMAX_PROJECT_DIR: env.PROJ });
+  const ad2 = run(AMEND, ['--dispatch', did, '--add', 'docs/other.md', '--approver', 'mvs_parent'],
+    { PLUGIN_DATA: env.DATA, MINIMAX_PROJECT_DIR: env.PROJ });
+  ok('D-75 重复加同一条目：added 为空且显式列出 already-present',
+    JSON.stringify(ad2.out.added) === JSON.stringify([]) &&
+    JSON.stringify(ad2.out.duplicate_paths || []).includes('docs/other.md'),
+    JSON.stringify(ad2.out.duplicate_paths || []).slice(0, 200));
+}
+
+
+// ── D-75 变异自检（独立开关 SAR_MUTATION_D75=1）────────────────────
+//
+// 为什么要有这个：只跑「新实现全绿」不能证明修复有效 ——
+// 必须把实现改回去，看目标断言会不会红（D-66 的教训：没有专属断言的修复，回退实现后一条都不红）。
+//
+// 做法沿用 tests/e2e-test.mjs 里 SAR_MUTATION 约定的那一套：
+//   ① 把插件副本装到**系统临时目录**（仓库工作树零改动，跑完即删）；
+//   ② 在**副本**上做定向回退；
+//   ③ 用副本重跑本套件的目标断言；
+//   ④ 目标断言必须转红。
+//
+// 为什么用**独立开关**而不是复用 SAR_MUTATION=1：
+//   总矩阵（SAR_MUTATION=1）归 tests/e2e-test.mjs 那一单独占，
+//   两边的分档语义混在一起会让「总矩阵跑过了」被误读成「D-75 的变异体也跑过了」。
+//   本单的变异体最终会由 tests/e2e-test.mjs 的下一位独占者归并进总矩阵，
+//   在那之前本单先在自己的专属套件里自证。
+//
+// 用法：node tests/scope-amend-test.mjs   （设 SAR_MUTATION_D75=1）
+async function runD75MutationMatrix() {
+  const { fileURLToPath } = await import('node:url');
+  const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const SRC_PLUGIN = path.join(REPO, 'plugin');
+
+  const mutRead = (p) => fs.readFileSync(p, 'utf8');
+  const mutWrite = (p, s) => fs.writeFileSync(p, s, 'utf8');
+  // 替换一处文本；变异点没命中或不唯一就直接失败（变异体没生效 = 矩阵无效）。
+  const mutReplace = (file, from, to) => {
+    const src = mutRead(file);
+    const idx = src.indexOf(from);
+    if (idx < 0) throw new Error('变异点未命中：' + path.basename(file) + ' :: ' + from.slice(0, 90));
+    if (src.indexOf(from, idx + 1) >= 0) throw new Error('变异点不唯一：' + path.basename(file) + ' :: ' + from.slice(0, 90));
+    mutWrite(file, src.slice(0, idx) + to + src.slice(idx + from.length));
+  };
+
+  const MUTANTS = [
+    {
+      // M1：把「升级显式化」整个摘掉 —— 回执与变更账都不再写升级。
+      // 这是 D-75 的核心变异体：它必须让「升级有没有被显式说出来」那几条断言转红。
+      id: 'M-D75a', defect: 'D-75',
+      what: '回退「升级显式化」：detectReadonlyUpgrades 直接返回空（升级不再被算出来）',
+      expect: [
+        'D-75 回执里有 upgraded_paths 字段且含被升级的路径',
+        'D-75 回执指明升级是从哪个只读条目来的',
+        'D-75 变更账那一行写出「readonly -> writable」的升级',
+        'D-75 台账里也记下了升级来源'
+      ],
+      apply: (mut) => {
+        mutReplace(path.join(mut, 'scripts', 'lib.mjs'),
+          'export function detectReadonlyUpgrades(scopeBefore, scopeAfter, targets) {\n  const before = Array.isArray(scopeBefore) ? scopeBefore : [];',
+          'export function detectReadonlyUpgrades(scopeBefore, scopeAfter, targets) {\n  // MUT-D75a：升级显式化被摘掉 —— 升级不再被算出来\n  return [];\n  const before = Array.isArray(scopeBefore) ? scopeBefore : [];');
+      }
+    },
+    {
+      // M2：只把**变更账**那一行的升级标注摘掉（回执不动）。
+      // 它必须让「变更账那一行能看出升级」那几条断言转红，
+      // 而**回执**那几条仍然绿 —— 这一对变异体证明两块留痕是**各自**被钉住的，
+      // 不是「一处红另一处跟着红」的假覆盖。
+      id: 'M-D75b', defect: 'D-75',
+      what: '回退变更账上的升级标注（回执不动）：变更账那一行不再写 readonly -> writable',
+      expect: [
+        'D-75 变更账那一行写出「readonly -> writable」的升级',
+        'D-75 变更账那一行含来源只读条目',
+        'D-75 --dispatch --add 的变更账也写出升级与来源条目'
+      ],
+      expectGreen: [
+        'D-75 回执里有 upgraded_paths 字段且含被升级的路径'
+      ],
+      apply: (mut) => {
+        const f = path.join(mut, 'scripts', 'scope-amend.mjs');
+        mutReplace(f,
+          "      (upgrades.length\n        ? ' | upgrade readonly -> writable: ' +\n          upgrades.map((u) => u.path + ' (from: ' + u.from_entry + ')').join('; ')\n        : '') +\n      (duplicates.length ? ' | already-present: ' + duplicates.join(', ') : ''));",
+          "      '' +\n      (duplicates.length ? ' | already-present: ' + duplicates.join(', ') : ''));");
+        mutReplace(f,
+          "    (upgrades.length\n      ? ' | upgrade readonly -> writable: ' +\n        upgrades.map((u) => u.path + ' (from: ' + u.from_entry + ')').join('; ')\n      : '') +\n    (duplicate.length ? ' | already-present: ' + duplicate.join(', ') : ''));",
+          "    '' +\n    (duplicate.length ? ' | already-present: ' + duplicate.join(', ') : ''));");
+      }
+    },
+    {
+      // M3：把**回执**上的升级字段摘掉（变更账不动）。
+      // 与 M2 互为镜像：它必须让回执那几条转红、变更账那几条仍然绿。
+      id: 'M-D75c', defect: 'D-75',
+      what: '回退回执上的升级字段（变更账不动）：回执不再输出 upgraded_paths / upgraded_from_readonly',
+      expect: [
+        'D-75 回执里有 upgraded_paths 字段且含被升级的路径',
+        'D-75 回执指明升级是从哪个只读条目来的'
+      ],
+      expectGreen: [
+        'D-75 变更账那一行写出「readonly -> writable」的升级'
+      ],
+      apply: (mut) => {
+        const f = path.join(mut, 'scripts', 'scope-amend.mjs');
+        mutReplace(f,
+          '      upgraded_paths: upgradePaths,\n      upgraded_from_readonly: upgrades,\n      upgrade_notice: upgradeNotice,',
+          '      upgraded_paths: [],\n      upgraded_from_readonly: [],\n      upgrade_notice: \'\',');
+        mutReplace(f,
+          '    upgraded_paths: upgrades.map((u) => u.path),\n    upgraded_from_readonly: upgrades,\n    upgrade_notice: upgradeNotice,',
+          '    upgraded_paths: [],\n    upgraded_from_readonly: [],\n    upgrade_notice: \'\',');
+      }
+    },
+    {
+      // M4：把**路径写法归一**摘掉 —— 升级检测退回按写法逐字比。
+      // 它必须让「路径写法不同（./docs/other.md）的升级仍被认出来」那条断言转红：
+      // 这条断言钉的正是「换个写法就绕过显式化」这个洞。
+      id: 'M-D75d', defect: 'D-75',
+      what: '回退路径写法归一：canonicalPathKey 原样返回（同一文件的不同写法认不出来）',
+      expect: [
+        'D-75 路径写法不同（./docs/other.md）的升级仍被认出来'
+      ],
+      apply: (mut) => {
+        mutReplace(path.join(mut, 'scripts', 'lib.mjs'),
+          "export function canonicalPathKey(p) {\n  const raw = String(p || '').replace(/\\\\/g, '/');",
+          "export function canonicalPathKey(p) {\n  // MUT-D75d：路径写法归一被摘掉\n  return String(p || '');\n  const raw = String(p || '').replace(/\\\\/g, '/');");
+      }
+    }
+  ];
+
+  const mutRunSuite = (pluginRoot) => {
+    const r = spawnSync(process.execPath, [path.join(REPO, 'tests', 'scope-amend-test.mjs')], {
+      encoding: 'utf8', timeout: 300000, cwd: REPO,
+      // 必须清掉 SAR_MUTATION_D75：被重跑的套件里若再次打开本工装，就会**递归**跑自己。
+      env: Object.assign({}, process.env, { SAR_PLUGIN_ROOT: pluginRoot, SAR_MUTATION_D75: '' })
+    });
+    const out = String(r.stdout || '') + String(r.stderr || '');
+    const lines = out.split(/\r?\n/);
+    return {
+      red: lines.filter((l) => l.startsWith('FAIL ')),
+      green: lines.filter((l) => l.startsWith('PASS ')).length
+    };
+  };
+
+  console.log('| 变异体 | 缺陷 | 变异内容 | 转红断言数 | 目标断言全部转红 |');
+  console.log('|---|---|---|---|---|');
+  for (const m of MUTANTS) {
+    const mutRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sar-mut-d75-' + m.id.toLowerCase() + '-'));
+    const mutPlugin = path.join(mutRoot, 'plugin');
+    try {
+      fs.cpSync(SRC_PLUGIN, mutPlugin, { recursive: true });
+      m.apply(mutPlugin);
+      const r = mutRunSuite(mutPlugin);
+      const missing = m.expect.filter((name) => !r.red.some((l) => l.indexOf(name) >= 0));
+      // expectGreen：这些断言在「只回退这一处」的变异体下必须**仍然绿** ——
+      // 否则说明两处留痕是连着的（改一处另一处跟着红），覆盖是假的。
+      const wronglyRed = (m.expectGreen || []).filter((name) => r.red.some((l) => l.indexOf(name) >= 0));
+      const good = missing.length === 0 && r.red.length > 0 && wronglyRed.length === 0;
+      if (!good) fail++;
+      console.log('| ' + m.id + ' | ' + m.defect + ' | ' + m.what + ' | ' + r.red.length + ' | ' + (good ? 'YES' : 'NO') + ' |');
+      for (const l of r.red) console.log('    RED ' + l.slice(0, 150));
+      if (missing.length) console.log('    MISS ' + missing.join(' / '));
+      if (wronglyRed.length) console.log('    WRONG-RED ' + wronglyRed.join(' / '));
+    } catch (e) {
+      fail++;
+      console.log('| ' + m.id + ' | ' + m.defect + ' | ' + m.what + ' | 0 | NO（变异体本身失败：' + e.message + '） |');
+    } finally {
+      fs.rmSync(mutRoot, { recursive: true, force: true });
+    }
+  }
+  console.log(fail === 0 ? '>>> D75 MUTATION MATRIX OK' : '>>> D75 MUTATION MATRIX FAILURES: ' + fail);
+  process.exit(fail === 0 ? 0 : 1);
 }
 
 console.log(fail === 0 ? '>>> SCOPE-AMEND ALL PASS' : '>>> SCOPE-AMEND FAILURES: ' + fail);

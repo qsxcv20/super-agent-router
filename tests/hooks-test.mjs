@@ -106,5 +106,50 @@ ok('普通提问仍静默放行（无可用专项成员的工作区）', (g.stdo
   ok('危险 matcher 覆盖删除/部署/发布', !!dangerGroup && /mavis_agent_delete/.test(dangerGroup.matcher) && /website_deploy/.test(dangerGroup.matcher) && /miniapp/.test(dangerGroup.matcher), dangerGroup ? dangerGroup.matcher : '');
 }
 
+// ── D-38：会话开始的注入里必须能看到「名录里有、账号里没有」的陈旧名单 ───
+//
+// 以前「陈旧」只有一条没人调用的 reconcile 命令能算出来（只 stdout、不写回名录、
+// 不阻断派工）—— 名义上有检测工具、实际上机制不生效。
+// 现在陈旧名单每次会话开始都能看到（与派工侧拒的是同一份名单计算）。
+{
+  const STALE_PROJ = fs.mkdtempSync(path.join(os.tmpdir(), 'sar-hooks-stale-'));
+  fs.mkdirSync(path.join(STALE_PROJ, '.superagent'), { recursive: true });
+  fs.writeFileSync(path.join(STALE_PROJ, '.superagent', 'roster.json'), JSON.stringify({
+    version: 1, updated: '2026-01-01',
+    members: [
+      { name: 'sa-stale-gone', kind: 'specialist', owns: '陈旧成员用例' },
+      { name: 'sa-live-member', kind: 'specialist', owns: '账号里存在的成员' }
+    ]
+  }), 'utf8');
+  const ACCT = fs.mkdtempSync(path.join(os.tmpdir(), 'sar-hooks-acct-'));
+  fs.mkdirSync(path.join(ACCT, 'sa-live-member'), { recursive: true });
+  const ss2 = spawnSync('node', [path.join(ROOT, 'scripts', 'session-start.mjs')], {
+    input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', session_id: 'probe-stale' }),
+    encoding: 'utf8',
+    env: Object.assign({}, process.env, {
+      PLUGIN_ROOT: ROOT, MINIMAX_PROJECT_DIR: STALE_PROJ, SAR_ACCOUNT_AGENTS_DIR: ACCT
+    }),
+    timeout: 10000
+  });
+  const o2 = ss2.stdout || '';
+  ok('D-38 SessionStart 注入陈旧成员名单',
+    o2.includes('陈旧成员') && o2.includes('sa-stale-gone'), o2.slice(0, 300));
+  ok('D-38 SessionStart 不把账号里存在的成员列成陈旧',
+    !o2.includes('sa-live-member'), o2.slice(0, 300));
+
+  // 账号成员名单不可用时必须**披露**（不能静默：静默 = 存在性校验悄悄失效）。
+  // 用自带名录的夹具（不依赖仓库根目录有没有名录）。
+  const ss3 = spawnSync('node', [path.join(ROOT, 'scripts', 'session-start.mjs')], {
+    input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', session_id: 'probe-noacct' }),
+    encoding: 'utf8',
+    env: Object.assign({}, process.env, {
+      PLUGIN_ROOT: ROOT, MINIMAX_PROJECT_DIR: STALE_PROJ
+    }),
+    timeout: 10000
+  });
+  const o3 = ss3.stdout || '';
+  ok('D-38 账号成员名单不可用时必须披露', o3.includes('账号成员名单不可用'), o3.slice(0, 300));
+}
+
 console.log(fail === 0 ? '>>> HOOKS ALL PASS' : '>>> HOOKS FAILURES: ' + fail);
 process.exit(fail ? 1 : 0);

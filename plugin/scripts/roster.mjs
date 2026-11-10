@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { readStdin, parseInput } from './lib.mjs';
+import { readStdin, parseInput, accountMemberNames, accountMemberExists, rosterMemberNames, staleRosterMembers } from './lib.mjs';
 import { readRecords, countEntries } from './lessons.mjs';
 
 // 名录上限。records.mjs 用它判断「截断是否可能发生」：
@@ -110,42 +110,185 @@ const NAME_RE = /^sa-[a-z0-9]+(?:-[a-z0-9]+)*$/;
 // 泛词黑名单：这些是角色形容词不是专项，文档写了不算，代码要拦。
 const BANNED_WORDS = ['analyst', 'assistant', 'expert', 'helper', 'guy', 'bot'];
 
+// ── D-39 名录侧：登记前核对该成员已存在于账号 ─────────────────────
+//
+// 判据：**该成员必须已存在于账号成员名单** ——
+//   <账号成员目录>/<name>/          专项成员
+//   <账号成员目录>/.builtin/<name>/  内置成员
+//
+// 为什么是这条判据（而不是「名字像不像」「方法论写了没有」）：
+// 账号成员是**账号级事实**（跨项目全局可见），项目名录是**项目级事实**。
+// 两边不成对 ⇒ 名录里会出现账号里根本没有的成员 ⇒ 派工到它时**静默失效**
+// （派工侧会拒，但名录本身已经在骗人：它声称有一个成员，其实没有）。
+// D-39 的另一半（建号纳入账号级危险动作）管的是「谁能往账号里塞成员」，
+// 这一半管的是「名录能不能登记一个账号里不存在的成员」—— 合起来才是「成对」。
+//
+// 为什么名单只从 lib.mjs 取：注入侧（session-start）与派工侧（dispatch）
+// 已经共用同一份 accountMemberNames()；这里若自己再扫一遍目录，
+// 两处口径迟早分叉 —— 分叉出来的「存在」判定就是猜的。
+// 附带好处：内置成员（.builtin/）由那一份名单统一计入，天然不被误伤。
+export function checkAccountMember(name) {
+  const target = String(name || '').trim();
+  const ctx = accountMemberNames();
+  if (!ctx.available) {
+    // 名单读不出来 = **无法核验**，不等于「成员不存在」。
+    // lib.mjs 的 accountMemberNames() 对这两种情况分得很清：
+    // available=false 是「读不出来 / 目录不存在」，不是「空名单」。
+    // 所以这里不放行 —— 放行等于把「取不到账号事实」当成「该成员没问题」。
+    return {
+      ok: false,
+      code: 'account_list_unavailable',
+      error: '无法核验账号成员名单：' + redactAccountDir(ctx.error, ctx.dir) +
+        '。名单读不出来时不能断言「该成员存在」—— 建号与登记必须成对，所以这里不放行。' +
+        '请在账号运行环境里执行（PLUGIN_DATA 指向本插件的专属目录，' +
+        '此时账号成员目录取 <用户主目录>/.minimax/agents/），' +
+        '或用 SAR_ACCOUNT_AGENTS_DIR 显式指向账号成员目录后重试。'
+    };
+  }
+  if (!accountMemberExists(ctx.names, target)) {
+    return {
+      ok: false,
+      code: 'account_member_missing',
+      error: '该成员在账号里不存在：' + target + '。' +
+        '建号与登记必须成对（先在账号里建好该成员，再登记进项目名录）。' +
+        '应检查的位置：账号成员目录下的 ' + target + '/ 与 .builtin/' + target + '/。'
+    };
+  }
+  return { ok: true, code: 'account_member_present', error: '' };
+}
+
+// 报错里不原样印账号目录的绝对路径。
+// 为什么：那串路径会被抄进 brief、错题本与变更账 —— 一旦被当成命令执行
+// （或被别的机器当成自己的路径去改），就是一条「看起来能跑的账号级写动作」。
+// 报错要说的是「去哪儿看」，不是「照着这串东西敲」。
+function redactAccountDir(text, dir) {
+  let s = String(text || '');
+  const d = String(dir || '');
+  if (d) s = s.split(d).join('<账号成员目录>');
+  return s;
+}
+
 function cmdReconcile(agentList) {
   const roster = readRoster();
-  const names = new Set(agentList.map(a => a.name || a));
-  const adopt = [];   // list 有 roster 无 → 收编
-  const stale = [];   // roster 有 list 无 → 陈旧
+
+  // ── 账号侧视图（account view）：陈旧判定的**唯一**输入 ──────────────
+  //
+  // 为什么要有「视图」这一层：陈旧这条**规则**只能有一份实现，
+  // 但「账号里有哪些成员」这个**事实**有两个来源：
+  //   ① 调用方喂进来的 agent 名单（mavis_agent_list 的输出）—— reconcile 原来的用法；
+  //   ② lib.mjs 的 accountMemberNames()（扫账号成员目录，含 .builtin/ 内置成员）
+  //      —— 机制侧（会话注入披露、派工拒绝）用的就是它。
+  //
+  // 以前这两边**各算各的**：机制侧按「名录里有、账号里没有」判陈旧，
+  // reconcile 却多带一层 source === 'runtime' 过滤 ——
+  // 于是同一个成员，机制侧认它陈旧、reconcile 说不陈旧。
+  // 结论不一致（一边拦派工、一边说没问题），迟早长歪成两套事实。
+  //
+  // 现在：规则只有一份（lib.mjs 的 staleRosterMembers），差别只剩
+  // 「喂哪份账号名单」，而且这个差别是**显式**的：
+  //   喂了名单 → 用喂的（来源 'fed-list'）；
+  //   没喂名单 → 用账号目录扫的（来源 'runtime' / 'explicit' / 'none'）。
+  // 不再藏在 source 过滤里 —— 那种「悄悄不同」才是真正会误导人的东西。
+  //
+  // 内置成员（.builtin/<name>/）在两种来源下都算「账号里存在」，
+  // 所以内置成员不会被判成陈旧；这一条由 accountMemberNames() 与
+  // 调用方喂的名单各自保证（mavis_agent_list 同样会列出内置成员）。
+  const fed = (Array.isArray(agentList) ? agentList : [])
+    .map(a => (a && typeof a === 'object' ? a.name : a))
+    .filter(Boolean)
+    .map(String);
+  let account;
+  if (fed.length) {
+    account = {
+      available: true,
+      names: [...new Set(fed)],
+      dir: '',
+      error: '',
+      source: 'fed-list'
+    };
+  } else {
+    // 没喂名单 → 用账号目录这一份事实（机制侧同源）。
+    account = accountMemberNames();
+  }
+  const names = new Set(account.names || []);
+
+  // 名录侧的名字集合也走共享口径（去重保序）——
+  // 否则这里一份、staleRosterMembers 里另一份，名录有重名时两边结论会不一致。
+  const rosterNames = rosterMemberNames(roster);
+  const adopt = [];   // 账号有 名录无 → 收编
+  const stale = [];   // 名录有 账号无 → 陈旧（规则见 lib.mjs 的 staleRosterMembers）
   const reuse = [];   // 两边都有 → 复用
-  for (const m of roster.members) {
-    if (names.has(m.name)) reuse.push(m.name);
-    else if (m.source === 'runtime') stale.push(m.name);
+  for (const n of rosterNames) {
+    if (names.has(n)) reuse.push(n);
   }
   for (const n of names) {
-    if (!roster.members.some(m => m.name === n) && !RESERVED.includes(n)) adopt.push(n);
+    if (!rosterNames.includes(n) && !RESERVED.includes(n)) adopt.push(n);
   }
-  process.stdout.write(JSON.stringify({ adopt, stale, reuse, roster_size: roster.members.length }, null, 2));
+  // 陈旧判定交给共享计算：注入侧披露的与派工侧拒绝的必须是同一个集合。
+  stale.push(...staleRosterMembers(roster, account));
+  process.stdout.write(JSON.stringify({
+    adopt,
+    stale,
+    reuse,
+    roster_size: roster.members.length,
+    // 这次比对用的是哪份账号名单 —— 不让「结论从哪来」变成猜的
+    account_view: {
+      source: account.source || '',
+      available: !!account.available,
+      members: names.size,
+      error: account.available ? '' : (account.error || '')
+    }
+  }, null, 2));
   process.exit(0);
 }
 
 function cmdRegister(member) {
   const name = String(member.name || '').trim();
-  const errors = [];
-  if (!NAME_RE.test(name)) errors.push('名称须匹配 sa-<领域>-<动作>，且小写 kebab-case');
+  // 错误与其命中的规则一一对应（error_rules 与 errors 同序）。
+  //
+  // 为什么多带一个 error_rules：只给中文报错，调用方只能靠「报错文本里有没有某个词」
+  // 去猜命中的是哪条规则 —— 那是猜。规则代号让「命中的就是这一条」变成可断言的事实，
+  // 也让「回退某条校验 → 哪条断言转红」能被机械核对（见 docs/audit/fix-d39-roster.md）。
+  const items = [];
+  const fail = (rule, msg) => { items.push({ rule, message: msg }); };
+
+  // 校验顺序 = bootstrap.md 的造人顺序：方法论 → 建成员 → 登记。
+  // 顺序有意义：早一步没过，后面的步骤就没必要问（问出来的错误会让人查错地方）。
+  if (!NAME_RE.test(name)) fail('name_format', '名称须匹配 sa-<领域>-<动作>，且小写 kebab-case');
   const segs = name.split('-');
   const banned = segs.filter(s => BANNED_WORDS.includes(s));
-  if (banned.length) errors.push('名称含泛词 ' + banned.join(',') + '：那是角色不是专项（专项应是「领域-动作」）');
-  if (RESERVED.includes(name)) errors.push('与内置/保留名冲突');
-  if (!member.owns) errors.push('缺 owns（负责哪一件事）');
-  if (!member.accepts) errors.push('缺 accepts（何时派给它）');
-  if (!member.reject) errors.push('缺 reject（何时不派给它）');
-  const roster = readRoster();
-  if (roster.members.some(m => m.name === name)) errors.push('roster 已存在同名成员');
-  if (roster.members.length >= MAX_ROSTER) errors.push('roster 已达上限 ' + MAX_ROSTER);
+  if (banned.length) fail('banned_word', '名称含泛词 ' + banned.join(',') + '：那是角色不是专项（专项应是「领域-动作」）');
+  if (RESERVED.includes(name)) fail('reserved_name', '与内置/保留名冲突');
+  if (!member.owns) fail('missing_owns', '缺 owns（负责哪一件事）');
+  if (!member.accepts) fail('missing_accepts', '缺 accepts（何时派给它）');
+  if (!member.reject) fail('missing_reject', '缺 reject（何时不派给它）');
   const methodPath = member.method || ('.superagent/methods/' + name + '.md');
   const absMethod = path.join(projectDir(), methodPath);
-  if (!fs.existsSync(absMethod)) errors.push('方法论文件不存在：' + methodPath + '（先写方法论，再建成员）');
-  if (errors.length) {
-    process.stdout.write(JSON.stringify({ ok: false, errors }, null, 2));
+  if (!fs.existsSync(absMethod)) fail('method_missing', '方法论文件不存在：' + methodPath + '（先写方法论，再建成员）');
+
+  // D-39 名录侧：登记前核对该成员已存在于账号。
+  //
+  // 只在「这个名字本身站得住」时才问账号：
+  //   · 命名不合规 / 含泛词 / 撞保留名 —— 这三种情况下登记必然被上面的规则拒掉，
+  //     再补一条「账号里不存在」只是噪声，还会把人引到错的地方查
+  //     （保留名 worker/explore 在账号里本来就有，说它「不存在」是假话）。
+  //   · 一次拒绝只该给出一个要改的地方 —— 报错多了，人会去逐条试，而不是直奔真正那条。
+  let accountCheck = null;
+  if (!items.length) {
+    accountCheck = checkAccountMember(name);
+    if (!accountCheck.ok) fail(accountCheck.code, accountCheck.error);
+  }
+  const roster = readRoster();
+  if (roster.members.some(m => m.name === name)) fail('duplicate_member', 'roster 已存在同名成员');
+  if (roster.members.length >= MAX_ROSTER) fail('roster_full', 'roster 已达上限 ' + MAX_ROSTER);
+
+  if (items.length) {
+    process.stdout.write(JSON.stringify({
+      ok: false,
+      errors: items.map(i => i.message),
+      error_rules: items.map(i => i.rule),
+      account_check: accountCheck ? { ok: accountCheck.ok, code: accountCheck.code } : null
+    }, null, 2));
     process.exit(0);
   }
   const entry = {

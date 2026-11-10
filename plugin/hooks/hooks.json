@@ -59,7 +59,7 @@
         ]
       },
       {
-        "matcher": "mavis_agent_delete|mavis_agent_update|website_deploy|miniapp|miniapp_publish",
+        "matcher": "mavis_agent_delete|mavis_agent_update|mavis_agent_create|website_deploy|miniapp|miniapp_publish",
         "hooks": [
           {
             "type": "command",

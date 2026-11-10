@@ -10,7 +10,7 @@
 //
 // 注入内容必须短。只放「什么时候该编排 + 怎么开始」，
 // 详细的协议放在 skill 里，让模型按需加载。
-import { readStdin, parseInput, readRoster, TIER_FULL } from './lib.mjs';
+import { readStdin, parseInput, readRoster, TIER_FULL, accountMemberNames, staleRosterMembers } from './lib.mjs';
 import { summarizeRecordsDetailed, SUMMARY_MAX_MEMBERS } from './records.mjs';
 import { readRouterLessons } from './lessons.mjs';
 
@@ -85,6 +85,32 @@ if (fullMembers.length) {
   lines.push('【full 权限等级成员（项目内自由读写）】');
   for (const n of fullMembers) lines.push('- ' + n);
   lines.push('派工给他们时 SCOPE 仍要写（记录意图 + 冲突检测），但不必逐路径枚举白名单。');
+}
+
+// 陈旧成员（名录里有、账号里没有）—— D-38。
+//
+// 为什么必须在这里出现：以前「陈旧」只有一条没人调用的 reconcile 命令能算出来
+// （只 stdout、不写回名录、不阻断派工）—— 名义上有检测工具、实际上机制不生效，
+// 陈旧成员只在 Router 自觉跑一次 list 时才可能被注意到。
+// 现在「名录里有、账号里没有」这件事**每次会话开始都能看到**，
+// 而且派工到陈旧成员会被直接拒绝 —— 两处用的是同一份名单计算。
+const accountCtx = accountMemberNames();
+if (accountCtx.available) {
+  const staleMembers = staleRosterMembers(rosterNow, accountCtx);
+  if (staleMembers.length) {
+    lines.push('');
+    lines.push('【陈旧成员（名录里有、账号里没有 —— 不得派工）】');
+    for (const n of staleMembers) lines.push('- ' + n);
+    lines.push('派工到这些成员会被机制直接拒绝（台账不写任何记录）。' +
+      '要恢复：先在账号里建好该成员，或把它从 .superagent/roster.json 里移除。');
+  }
+} else if ((rosterNow.members || []).length) {
+  // 只在项目**真的用到了专项成员**（名录非空）时披露 ——
+  // 没有名录就没有「专项成员」这套用法，这时插一段环境说明只是噪音。
+  // 有名录时不披露才是危险的：父会话会以为派工目标的存在性有人把关。
+  lines.push('');
+  lines.push('【账号成员名单不可用】' + accountCtx.error);
+  lines.push('本轮无法核验派工目标是否存在：派工侧**不判存在性**（只把这件事记进痕迹），账号名单可用时才会拒派不存在的成员。');
 }
 
 // 实战记录摘要：让模型一开始就知道谁做成过什么

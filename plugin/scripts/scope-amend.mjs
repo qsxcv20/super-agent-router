@@ -47,6 +47,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import {
   readLedger, writeLedger, grantScopeRequest, denyScopeRequest, READONLY_PREFIX,
+  detectReadonlyUpgrades,
   readRoster, projectRoot, TIER_FULL, TIER_SCOPED, isPrivateMemoryPath
 } from './lib.mjs';
 
@@ -170,19 +171,47 @@ if (parsed.grant || parsed.deny) {
     if (!r.ok) fail(r.error);
     const okWrite = writeLedger(ledger);
     if (!okWrite) fail('批准结果写回台账失败 —— 扩权可能没有生效');
+    // D-75：这次批准可能把某条路径从**只读条目**升级成了**可写条目**。
+    // 口径（父会话已定）：升级能力**保留**（管理员批准即授权升级），
+    // 但升级必须**显式** —— 回执与变更账都要写明「哪个路径从哪个只读条目升级而来」。
+    // 以前这里只写「+ <条目名>」，只读被升级成可写在回执与账上**都看不出来**。
+    const upgrades = Array.isArray(r.upgraded_from_readonly) ? r.upgraded_from_readonly : [];
+    const upgradePaths = Array.isArray(r.upgraded_paths) ? r.upgraded_paths : [];
+    const duplicates = Array.isArray(r.duplicate_paths) ? r.duplicate_paths : [];
+    const upgradeNotice = upgrades.length
+      ? '本次批准把 ' + upgradePaths.join(', ') +
+        ' 从只读条目升级为可写（来源只读条目：' +
+        upgrades.map((u) => u.from_entry).join(', ') + '）'
+      : '';
     // 审计留痕：批准与提权同口径进 .superagent/changes.log（批准人与时间）。
     // 台账里也有 approved_by / approved_at，但那是**台账**，不是项目的变更账 ——
     // 验收时查「谁批的」查的是 changes.log。
     const logged = appendChangeLog(
       new Date().toISOString() + ' | scope | ' + (r.dispatch_id || '') +
       ' | grant ' + id + ' | by ' + approver +
-      ' | + ' + (Array.isArray(r.added) ? r.added.join(', ') : ''));
+      ' | + ' + (Array.isArray(r.added) ? r.added.join(', ') : '') +
+      (upgrades.length
+        ? ' | upgrade readonly -> writable: ' +
+          upgrades.map((u) => u.path + ' (from: ' + u.from_entry + ')').join('; ')
+        : '') +
+      (duplicates.length ? ' | already-present: ' + duplicates.join(', ') : ''));
     process.stdout.write(JSON.stringify({
       ok: true,
       granted: id,
       dispatch_id: r.dispatch_id,
       added: r.added,
       approved_by: approver,
+      // 新增字段：只读 → 可写的升级显式化（D-75）。既有字段语义不变。
+      upgraded_paths: upgradePaths,
+      upgraded_from_readonly: upgrades,
+      upgrade_notice: upgradeNotice,
+      duplicate_paths: duplicates,
+      // 变更账写成功没有 —— 回执必须说出来（追加写失败会被静默吞掉，
+      // 于是「升级已记入变更账」这句话就变成了一句没人验证过的断言）。
+      audit_logged: !!logged,
+      // 既有字段的语义**一个字都不改**（口径：回执是 JSON 输出，加字段，不改既有字段语义）。
+      // 升级信息全部走新增字段（upgrade_notice / upgraded_paths / upgraded_from_readonly），
+      // 不去改写 note —— 改写既有字段会让「字段语义不变」这条口径无法被机械核对。
       note: '读请求只授读（ro: 条目）；派工记录与子会话绑定已同步，worker 下一次访问即生效'
     }, null, 2) + '\n');
     process.exit(0);
@@ -322,11 +351,19 @@ if (parsed.dispatch && parsed.add) {
       '范围层对私有记忆路径一律不授予（契约 S13.4），只有「成员自己那份」的精确文件通道例外。' +
       '需要它的内容，请让 Router 转写进 brief（契约通道），不要走扩权。');
   }
+  // 升级检测要的是**同一份 scope 的前后快照** —— 升级是「差」，只看一份是看不出来的。
+  const scopeBefore = Array.isArray(d.scope) ? d.scope.slice() : [];
   if (!Array.isArray(d.scope)) d.scope = [];
   if (!Array.isArray(d.scope_amended)) d.scope_amended = [];
   const added = [];
+  const duplicate = [];
   if (!d.scope.includes(entry)) { d.scope.push(entry); added.push(entry); }
+  else duplicate.push(String(parsed.add));
   if (!d.scope_amended.includes(entry)) d.scope_amended.push(entry);
+  // D-75：这条「直接加条目」的路与 --grant 是同一类动作 ——
+  // 加一条可写条目、而 scope 里已经有覆盖同一路径的只读条目 ⇒ 只读被升级成可写。
+  // 口径同 --grant：**不堵死升级、但不许静默**（回执与变更账都要写明升级了什么）。
+  const upgrades = detectReadonlyUpgrades(scopeBefore, d.scope, [String(parsed.add)]);
   for (const b of (ledger.bindings || [])) {
     if (b.dispatch_id && b.dispatch_id === d.dispatch_id) {
       if (!Array.isArray(b.scope)) b.scope = [];
@@ -334,14 +371,31 @@ if (parsed.dispatch && parsed.add) {
     }
   }
   if (!writeLedger(ledger)) fail('扩权写回台账失败');
-  appendChangeLog(
+  const upgradeNotice = upgrades.length
+    ? '本次加条目把 ' + upgrades.map((u) => u.path).join(', ') +
+      ' 从只读条目升级为可写（来源只读条目：' +
+      upgrades.map((u) => u.from_entry).join(', ') + '）'
+    : '';
+  const logged = appendChangeLog(
     new Date().toISOString() + ' | scope | ' + d.dispatch_id +
-    ' | add-entry | by ' + approver + ' | + ' + added.join(', '));
+    ' | add-entry | by ' + approver + ' | + ' + added.join(', ') +
+    (upgrades.length
+      ? ' | upgrade readonly -> writable: ' +
+        upgrades.map((u) => u.path + ' (from: ' + u.from_entry + ')').join('; ')
+      : '') +
+    (duplicate.length ? ' | already-present: ' + duplicate.join(', ') : ''));
   process.stdout.write(JSON.stringify({
     ok: true,
     dispatch_id: d.dispatch_id,
     added,
     approved_by: approver,
+    // 新增字段：只读 → 可写的升级显式化（D-75）。既有字段语义不变。
+    upgraded_paths: upgrades.map((u) => u.path),
+    upgraded_from_readonly: upgrades,
+    upgrade_notice: upgradeNotice,
+    duplicate_paths: duplicate,
+    // 同上：变更账写成功没有，回执必须说出来。
+    audit_logged: !!logged,
     scope: d.scope
   }, null, 2) + '\n');
   process.exit(0);

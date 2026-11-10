@@ -30,7 +30,10 @@ import {
   findBinding, upsertBinding, readBriefFromTranscript, scopeOverlaps,
   workspaceRoot, resolveAgentKey, isPathToken, extractPathTokens,
   splitCommandTokens, isReadOnlyCommand, extractWriteTargets, hasWriteVerb,
-  DANGEROUS_COMMAND, detectDangerousAccountCommand, hasCommandSubstitution,
+  DANGEROUS_COMMAND, detectDangerousAccountCommand, detectDangerousInComposite,
+  hasCommandSubstitution, readOnlyScopeHit,
+  TOOL_DEPLOY, TOOL_APP_PUBLISH, TOOL_AGENT_DELETE, TOOL_AGENT_UPDATE, TOOL_AGENT_CREATE,
+  TOOL_MAVIS, TOOL_APP,
   recordScopeRequest, memberTier, withinWorkspace, touchesSuperagentPath, TIER_FULL,
   TIER_SCOPED, normScopeEntry, isPrivateMemoryPath, isPrivateMemoryEntry,
   expandsPrivateMemoryTree, PRIVATE_MEMORY_DIRS,
@@ -88,22 +91,29 @@ if (!agentType) process.exit(0);
 // ── 第 1 类：账号级 / 对外不可逆操作 ────────────────────────────
 // 这些不碰工作区文件，但一旦执行就是账号级或对外可见的不可逆动作。
 // 派工产生的 worker 永远不该自己做这些事 —— 必须由用户亲自发起。
+// 键名用 lib.mjs 里拼出来的常量 —— 原因见那里的注释（自举误伤）。
+// 建号与删除 / 改写必须对称（D-39）：账号成员是账号级全局可见的（跨项目），
+// 任何会话都能建号 = 绕过造人纪律往账号里塞成员，账号成员集合与项目名录必然脱钩。
 const DANGEROUS = {
-  mavis_agent_delete: '删除成员是账号级不可逆操作（历史会话不会随之清理）',
-  mavis_agent_update: '修改成员的 description/system_prompt 是账号级变更，需人工确认',
-  website_deploy: '部署会把内容发布到公网，属于对外可见的不可逆动作',
-  miniapp_publish: '发布 Mini App 会替换线上运行实例，属于对外可见的不可逆动作',
-  miniapp: '发布 Mini App 会替换线上运行实例，属于对外可见的不可逆动作'
+  [TOOL_AGENT_DELETE]: '删除成员是账号级不可逆操作（历史会话不会随之清理）',
+  [TOOL_AGENT_UPDATE]: '修改成员的 description/system_prompt 是账号级变更，需人工确认',
+  [TOOL_AGENT_CREATE]: '创建账号级成员是账号级全局可见的变更，需人工确认',
+  [TOOL_DEPLOY]: '部署会把内容发布到公网，属于对外可见的不可逆动作',
+  [TOOL_APP_PUBLISH]: '发布小程序会替换线上运行实例，属于对外可见的不可逆动作',
+  [TOOL_APP]: '发布小程序会替换线上运行实例，属于对外可见的不可逆动作'
 };
 
 // 参数维度的危险判定（S5.2）：同一个工具名，参数不同后果完全不同。
 // 以前只按工具名等值匹配，mavis 的 command 参数空间里就有 agent delete /
 // agent update，却因为工具名是 "mavis" 而整条绕过（D-03）。
 function dangerousByArgs(toolName, ti) {
-  if (toolName === 'mavis') {
+  if (toolName === TOOL_MAVIS) {
     const cmd = String((ti && ti.command) || '').trim().toLowerCase();
-    if (/^agent\s+(delete|update)\b/.test(cmd)) {
-      return 'mavis 的 ' + cmd.split(/\s+/).slice(0, 2).join(' ') + ' 会删除/改写账号级成员，必须由用户亲自发起';
+    // 账号级成员动作：删除 / 改写 / **建号**（D-39）。
+    // 建号与删除、改写必须对称：账号成员是账号级全局可见的（跨项目），
+    // 只拦删除与改写、建号完全放行 = 任何会话都能往账号里塞成员，绕过造人纪律。
+    if (/^agent\s+(delete|update|create)\b/.test(cmd)) {
+      return 'mavis 的 ' + cmd.split(/\s+/).slice(0, 2).join(' ') + ' 会删除/改写/创建账号级成员，必须由用户亲自发起';
     }
   }
   if (toolName === 'miniapp') {
@@ -114,13 +124,19 @@ function dangerousByArgs(toolName, ti) {
 }
 
 // 复合工具（run_code）内部点名危险工具时，同样要拦。
+//
+// 判定口径按**内层工具**分形态（D-41）：
+//   · write / edit 的载荷是**数据**（文档正文）—— 不按命令形态判；
+//   · bash 的 command 是**命令** —— 交给命令位置判定；
+//   · mavis / 小程序发布类工具 —— 按参数判；
+//   · 直接点名危险工具的调用 —— 照拦。
+//
+// 以前这里是对整段代码文本做朴素正则：审计报告里引用被禁形态的原文就被拦，
+// 审计产出落不了盘（成文时亲身触发过两次），而且与 bash 通道两套口径。
 function dangerousInCode(code) {
-  const c = String(code || '');
-  if (/mavis_agent_delete|agent\s+delete/i.test(c)) return '在复合调用里执行了 agent delete（删除成员是账号级不可逆操作）';
-  if (/mavis_agent_update|agent\s+update/i.test(c)) return '在复合调用里执行了 agent update（修改成员是账号级变更）';
-  if (/website_deploy/.test(c)) return '在复合调用里执行了部署（部署会把内容发布到公网）';
-  if (/miniapp/i.test(c) && /publish/i.test(c)) return '在复合调用里执行了 Mini App 发布（对外可见的不可逆动作）';
-  return '';
+  const hit = detectDangerousInComposite(code);
+  if (!hit) return '';
+  return '在复合调用里执行了' + hit.matched + '（' + hit.reason + '）';
 }
 
 const argDanger = dangerousByArgs(tool, tInput);
@@ -490,12 +506,14 @@ function denyOutOfScope(reason, outside, mode, opts) {
     const root = path.dirname(path.dirname(String(process.argv[1] || '')));
     if (root) amendCmd = path.join(root, 'scripts', 'scope-amend.mjs');
   } catch (e) {}
-  const hint = !approvable
-    ? '（该目标**批准也不会生效**：写权限对编排层私有状态目录一律不授 —— 请让父会话改派工范围或直接改 SCOPE，不要在这里申请批准）'
-    : reqId
-      ? '（已记入待审清单 ' + reqId + '。批准命令：' + amendCmd + ' --grant ' + reqId +
-        ' —— **这条命令只有父会话能执行**：它是父会话专属的权限入口，worker 自行执行会被护栏直接拒绝）'
-      : '（越界请求未能记账：请父会话直接改 SCOPE 后重新派工）';
+  const hint = (opts && opts.hint)
+    ? opts.hint
+    : (!approvable
+      ? '（该目标**批准也不会生效**：写权限对编排层私有状态目录一律不授 —— 请让父会话改派工范围或直接改 SCOPE，不要在这里申请批准）'
+      : reqId
+        ? '（已记入待审清单 ' + reqId + '。批准命令：' + amendCmd + ' --grant ' + reqId +
+          ' —— **这条命令只有父会话能执行**：它是父会话专属的权限入口，worker 自行执行会被护栏直接拒绝）'
+        : '（越界请求未能记账：请父会话直接改 SCOPE 后重新派工）');
   deny(reason + hint);
 }
 
@@ -528,25 +546,47 @@ function outOfScopeVerdict(outside, mode) {
       (fullTier ? ' —— **full 等级也不放行**' : '，不在白名单内') +
       '（该目录存着成员的权限等级与彼此的错题本，写权限对私有目录一律不授）');
   }
-  if (far.length) {
+  // 「只读条目命中的写操作」与「路径根本不在白名单内」是**两件事**（D-40）。
+  // 以前两者共用一句话（"不在白名单内"），而同一句消息的 SCOPE 列表里就写着
+  // `ro: <path>` —— 按字面读，Router 会以为「要加白名单」，
+  // 把一个本可只读执行的动作升级成**可写**授权。
+  const farRo = far.filter((t) => readOnlyScopeHit(scope, t));
+  const farAbsent = far.filter((t) => !farRo.includes(t));
+  if (farRo.length) {
+    parts.push('目标 ' + farRo.slice(0, 5).join(', ') +
+      ' **在白名单内，但登记为只读条目**（ro:）—— 只读条目永不授予写权限（契约 S2.2），' +
+      '当前操作是写操作。如需写操作，请把该条目的 `ro:` 去掉后**重新派工**；' +
+      '不要把它当成需要扩权的目标 —— 本次派工的边界是父会话写下的，不是 worker 能改的');
+  }
+  if (farAbsent.length) {
     parts.push((fullTier
       ? '该成员是 full 等级（项目工作区内自由读写），以下路径在**工作区之外**'
       : '本次派工声明的 SCOPE 为 [' + scope.join(', ') + ']，以下路径不在白名单内') +
-      '：' + far.slice(0, 5).join(', '));
+      '：' + farAbsent.slice(0, 5).join(', '));
   }
   // 能不能批准：工作区外的路径能（逐条批准）；**私有记忆目录一律不能**
   // （范围层不授予，扩权入口也会拒 —— 给了就是一条永远不生效的死条目）；
   // .superagent/ 根下的**读**请求能（精确文件条目精确生效），写不能；
   // full 等级一律不给批准提示。
-  const approvable = far.length > 0
+  const approvable = farAbsent.length > 0
     ? true
     : (privMem.length > 0 ? false
       : (fullTier ? false : (mode === 'read' && priv.length > 0)));
+  // 只读条目命中的场景给**专属**提示：别去申请批准，去掉 ro: 重新派工。
+  //
+  // 为什么不给批准提示（D-40）：批准写请求等于把只读条目升级成可写 ——
+  // 那正是这条缺陷要的「把一个本可只读执行的动作升级成可写授权」。
+  // 父会话要授写，正确做法是改派工的 SCOPE（去掉 ro:）后重新派工。
+  const hint = (farRo.length && !farAbsent.length)
+    ? '（该条目在本次派工里被登记为只读（ro:）—— 写权限不靠批准申请获得：' +
+      '请让父会话把该条目的 `ro:` 去掉后重新派工）'
+    : '';
   return {
     reason: '[super-agent-router] 越界拦截：' + parts.join('；') +
       (got && got.mode === 'read' && !fullTier ? '（读操作允许范围为 scope 所在目录树）' : '') +
       '。如确需修改，先更新 scope 并重新派工，不要自行扩大范围。',
-    approvable
+    approvable,
+    hint
   };
 }
 
@@ -686,7 +726,7 @@ if (tool === 'bash') {
   const outside = targets.filter((t) => !inAllowed(t, got.mode));
   if (outside.length) {
     const verdict = outOfScopeVerdict(outside, got.mode);
-    denyOutOfScope(verdict.reason, outside, got.mode, { approvable: verdict.approvable });
+    denyOutOfScope(verdict.reason, outside, got.mode, { approvable: verdict.approvable, hint: verdict.hint });
   }
   allow(injected);
   process.exit(0);
@@ -713,4 +753,4 @@ if (outside.length === 0) {
   process.exit(0);
 }
 const verdict = outOfScopeVerdict(outside, got.mode);
-denyOutOfScope(verdict.reason, outside, got.mode, { approvable: verdict.approvable });
+denyOutOfScope(verdict.reason, outside, got.mode, { approvable: verdict.approvable, hint: verdict.hint });

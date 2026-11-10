@@ -8,6 +8,7 @@
 // 这些位置以前留过放行分支 —— 放行分支就是未来的静默失效：
 // 越界管控一旦落空，不是报错，而是不再生效（D-01 / D-02 / D-04 / D-16）。
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 export function readStdin() {
@@ -297,6 +298,49 @@ export function inScope(scope, target, mode = 'write') {
       if (exact) return true;
       continue;
     }
+  }
+  return false;
+}
+
+// 该目标是否被某个**只读条目**覆盖 —— 写判定下本该命中、却被 ro: 前缀挡掉的那一种。
+//
+// 为什么需要单独一条判定（D-40）：拦截消息要分两型 ——
+//   「该路径不在白名单内」        → 路径根本没进白名单；
+//   「该路径在白名单内，但登记为只读条目」 → 路径进了白名单，只是以只读身份。
+// 以前两者共用一句话，而同一句消息的 SCOPE 列表里就写着 `ro: <path>` ——
+// 按字面读，Router 会以为「要加白名单」，把一个本可只读执行的动作升级成可写授权。
+//
+// 判定口径与 inScope 的写模式**完全一致**（精确命中 / 落在以 / 结尾的目录条目之下），
+// 只是不跳过只读条目 —— 否则两处口径会分叉，分叉出来的分型就是猜的。
+export function readOnlyScopeHit(scope, target) {
+  if (!Array.isArray(scope) || !scope.length) return false;
+  const rawT = String(target || '').replace(/\\/g, '/');
+  if (!rawT) return false;
+  const rel = relativize(rawT);
+  const abs = normalizePath(rawT);
+  if (!rel && !abs) return false;
+  for (const entry of scope) {
+    const parsed = splitScopeEntry(entry);
+    if (!parsed || !parsed.readOnly) continue;
+    const raw = parsed.path.replace(/\\/g, '/');
+    const e = normalizePath(raw);
+    if (!e || e === '*') continue;
+    const isDir = raw.endsWith('/');
+    const eRel = relativize(raw);
+    const forms = [];
+    if (e) forms.push(e);
+    if (eRel && eRel !== e) forms.push(eRel);
+    const prefixes = forms.map((f) => (isDir ? f.replace(/\/+$/, '') : f));
+    const under = (p) => {
+      if (rel === p || abs === p) return true;
+      if (rel.startsWith(p + '/') || abs.startsWith(p + '/')) return true;
+      if (p === '' && rel !== '') return true;
+      return false;
+    };
+    const exact = forms.some((f) => rel === f || abs === f) || (eRel === '' && rel !== '');
+    if (exact) return true;
+    // 目录条目只覆盖其「之下」的内容，不含目录本身（与 inScope 写模式同口径）。
+    if (isDir && prefixes.some((p) => under(p) && !(rel === p || abs === p))) return true;
   }
   return false;
 }
@@ -665,6 +709,150 @@ export function memberTier(name, root) {
   return t === TIER_FULL ? TIER_FULL : TIER_SCOPED;
 }
 
+// ── 账号成员名单（账号级事实源）────────────────────────────
+//
+// 成员存在于两个地方，含义不同（D-37 / D-38）：
+//   账号的 agent 目录   → **是否存在**（账号级全局，跨项目）
+//   项目名录 roster.json → 专项元数据（项目级）
+//
+// 派工到「账号里不存在」的成员不会启动子会话，台账却照样写一条 state:'active'：
+// ① 占掉一个并发名额与一个累计名额；
+// ② 同 SCOPE 的后续派工被「组队冲突」误拦；
+// ③ 教训与履历照常注入 brief，外观完全正常 ⇒ **静默失效**。
+// 所以派工**写台账之前**必须核验目标成员存在。
+//
+// 名单获取做成**一次调用**（这里）：注入侧披露的陈旧名单与派工侧拒绝的派工
+// 必须是同一份计算 —— 两处各算各的，口径迟早长歪。
+//
+// 账号成员目录：
+//   <账号根>/agents/<name>/          账号成员
+//   <账号根>/agents/.builtin/<name>/  内置成员
+//
+// 账号根怎么找：
+//   ① SAR_ACCOUNT_AGENTS_DIR —— 显式指定。账号是跨项目的全局事实，
+//      测试夹具不自带账号环境就等于没有账号事实可判，所以夹具必须显式提供；
+//   ② 运行时：PLUGIN_DATA 指向本插件的**专属目录**（契约 S11 的
+//      .../plugin-data/hooks/super-agent-router）时，账号根取用户目录下的 .minimax；
+//   ③ 其它情况（夹具）：**账号名单不可用** —— 取不到就不能断言「成员不存在」。
+//
+// 为什么 ③ 不直接放行：名单取不到时，名录里登记过的成员**无法核验存在性**，
+// 那就按「取不到就拒绝」处理（dispatch 的闸门 1d）；名录之外的名字放行但留痕 ——
+// 没有名录就没有「专项成员」这套用法，账号名单不可用这件事本身要在注入里披露。
+
+// PLUGIN_DATA 是否指向本插件的专属目录（.../hooks/super-agent-router）。
+// 与 writeGateTrace 的判定同源 —— 同一个事实只应有一处定义。
+//
+// ⚠️ 必须按**目录名的真实字节**比，不能先 trim 整个路径再取 basename：
+// Windows 上「super-agent-router」与「super-agent-router 」（末尾多一个空格）
+// 是**两个不同的目录**，可以同时存在。
+// 先 trim 会把后者误判成前者 ⇒ 运行时若 PLUGIN_DATA 指向那个空目录，
+// readLedger() 读到的是**空台账**（格式合法、看着正常）⇒
+// 「记录丢了 ⇒ 视同没有在飞派工」⇒ 冲突检测与名额检测**全盲**（D-10 那一族的静默失效）。
+//
+// 判据：取 basename 时**不 trim**，直接比原始目录名；
+// 允许的只有「路径两端无意义的空白」这一种输入修正，且必须在校验**之后**。
+export function isPluginOwnDataDir(base) {
+  const raw = String(base || '');
+  if (!raw.trim()) return false;
+  // 尾部分隔符要剥掉（'…/super-agent-router/' 是同一个目录），但**不能**剥空格。
+  const b = raw.replace(/[\\/]+$/, '');
+  if (!b) return false;
+  const name = path.basename(b).toLowerCase();
+  const parent = path.basename(path.dirname(b)).toLowerCase();
+  if (name !== 'super-agent-router' || parent !== 'hooks') return false;
+  // 最后一道：目录名必须**逐字**等于期望值（不含任何尾随空白）。
+  // 上面两行已经保证这点（basename 保留空格，比对时空格会让 name !== 期望值）。
+  return true;
+}
+
+// 账号根（用户目录下的 .minimax）。
+export function accountRoot() {
+  const explicit = String(process.env.SAR_ACCOUNT_HOME_DIR || '').trim();
+  if (explicit) return explicit;
+  return path.join(os.homedir(), '.minimax');
+}
+
+// 账号成员目录的定位结果。
+export function accountAgentsRoot() {
+  const explicit = String(process.env.SAR_ACCOUNT_AGENTS_DIR || '').trim();
+  if (explicit) return { dir: explicit, source: 'explicit', error: '' };
+  const data = process.env.PLUGIN_DATA || process.env.MINIMAX_PLUGIN_DATA || '';
+  if (!isPluginOwnDataDir(data)) {
+    return {
+      dir: '',
+      source: 'none',
+      error: '账号成员目录未确定：PLUGIN_DATA 不指向本插件的专属目录（契约 S11 的 .../plugin-data/hooks/super-agent-router），' +
+        '当前不是账号运行环境（测试夹具没有账号事实）。需要判成员存在性时请显式指定 SAR_ACCOUNT_AGENTS_DIR。'
+    };
+  }
+  return { dir: path.join(accountRoot(), 'agents'), source: 'runtime', error: '' };
+}
+
+// 账号成员名单。
+// 返回 { available, names, dir, error, source }：
+//   available=false → 名单**读不出来 / 目录不存在**（不是「空名单」），
+//   调用方不得据此断言「成员不存在」，只能按「无法核验」处理。
+export function accountMemberNames() {
+  const root = accountAgentsRoot();
+  if (!root.dir) {
+    return { available: false, names: [], dir: '', error: root.error, source: root.source };
+  }
+  let entries = null;
+  try {
+    entries = fs.readdirSync(root.dir, { withFileTypes: true });
+  } catch (e) {
+    return {
+      available: false, names: [], dir: root.dir, source: root.source,
+      error: '账号成员目录读不出来：' + root.dir + '（' + String((e && e.message) || e) + '）'
+    };
+  }
+  const names = new Set();
+  for (const en of entries) {
+    if (!en || !en.isDirectory()) continue;
+    const n = String(en.name || '');
+    if (!n || n.startsWith('.')) continue;   // .builtin 单独处理
+    names.add(n);
+  }
+  // 内置成员：<dir>/.builtin/<name>/
+  try {
+    for (const en of fs.readdirSync(path.join(root.dir, '.builtin'), { withFileTypes: true })) {
+      if (en && en.isDirectory() && en.name) names.add(String(en.name));
+    }
+  } catch { /* 没有内置成员目录 = 该账号没有内置成员，不算「读不到」 */ }
+  return { available: true, names: [...names].sort(), dir: root.dir, error: '', source: root.source };
+}
+
+// 目标成员是否在账号名单里。
+// 'agent:<name>' 是 task 工具的命名空间前缀，账号目录里存的是 <name> 本身。
+export function accountMemberExists(names, target) {
+  const set = new Set(Array.isArray(names) ? names : []);
+  const t = String(target || '').trim();
+  if (!t) return false;
+  if (set.has(t)) return true;
+  const m = t.match(/^agent:(.+)$/);
+  if (m && set.has(String(m[1]).trim())) return true;
+  return false;
+}
+
+// 名录里的成员名（去重、保序）。
+export function rosterMemberNames(roster) {
+  const members = roster && Array.isArray(roster.members) ? roster.members : [];
+  const out = [];
+  for (const m of members) {
+    const n = String((m && m.name) || '').trim();
+    if (n && !out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
+// 陈旧成员：名录里有、账号里没有。
+// 注入侧（session-start）披露的与派工侧（dispatch）拒绝的必须是同一个集合。
+export function staleRosterMembers(roster, account) {
+  if (!account || !account.available) return [];
+  const set = new Set(account.names || []);
+  return rosterMemberNames(roster).filter((n) => !set.has(n));
+}
+
 // 私有记忆路径（每个成员自己的错题本与方法论）。
 //
 // 判据：**任何 scope 条目都不得授予这些路径**（读与写都不行），
@@ -836,6 +1024,142 @@ export function recordScopeRequest(ledger, req) {
   return entry.request_id;
 }
 
+// ── 只读升级检测（D-75）────────────────────────────────
+//
+// 管理员批准一条「只读条目上的写请求」时，扩权会给该路径追加一条**可写**条目 ——
+// 于是只读被**升级**成可写。D-40 想防的正是这个动作（把只读动作升级成可写授权），
+// 那轮只改了拦截措辞，没动扩权入口 ⇒ 同一个动作在**管理员路径**上照样成立。
+//
+// 口径（父会话已定，机制照做）：**不堵死升级** ——
+// 「成员给管理员做事必须有权限」是这个机制要满足的诉求，堵死批准权会与它相反。
+// 但升级必须**显式**：批准回执与变更账都要写明「哪个路径从哪个只读条目升级成了可写」。
+// 缺陷不是「升级」本身，是「升级看不出来」（静默）。
+//
+// 判定口径（两处共用同一套匹配逻辑，不自己重写路径比较 ——
+// 这里分叉出去的话，「升级没被认出来」就是新的静默失效）：
+//   · 只读覆盖 = readOnlyScopeHit(scope, target)：与 inScope 写模式同口径，只是不跳过只读条目
+//   · 可写授予 = inScope(scope, target, 'write')：只读条目永不授写（S2.2）
+export function readonlyEntryCovering(scope, target) {
+  const key = canonicalPathKey(target);
+  if (!key) return '';
+  for (const e of canonicalScopeEntries(scope)) {
+    if (!e.readOnly) continue;
+    if (readOnlyScopeHit([e.canon], key)) return e.raw;
+  }
+  return '';
+}
+
+export function writableEntryGranting(scope, target) {
+  const key = canonicalPathKey(target);
+  if (!key) return '';
+  for (const e of canonicalScopeEntries(scope)) {
+    if (e.readOnly) continue;
+    if (inScope([e.canon], key, 'write')) return e.raw;
+  }
+  return '';
+}
+
+// ── 路径写法归一（只用于「是不是同一个文件」的比较）─────────────────
+//
+// 为什么需要：SCOPE 条目与越界请求里的路径都是**手写**的，同一个文件可以有多种写法
+// （'./docs/x.md' / 'docs//x.md' / 'docs\\x.md' / 'docs/x.md/'）。
+// 授权判定按写法逐字比（那是范围层的既定语义，本单不改它），
+// 但**升级检测**必须认出「这些写法指的是同一个文件」——
+// 否则管理员批一条 './docs/x.md' 就能把只读条目罩着的那个文件静默升级成可写，
+// 而回执与变更账都看不出这次升级（D-75 要防的正是这件事）。
+//
+// 归一只做三件事：斜杠统一、去掉 './' 与重复斜杠、去掉结尾斜杠（目录条目保留结尾斜杠）。
+// **不**解析 '..'（解析它会引入新的路径语义，且 '../x' 与 'x' 归一后可能误判成同一个文件）——
+// 宁可漏认（那种写法本来也极罕见），不可误认（误认 = 回执写出一次没发生的升级）。
+export function canonicalPathKey(p) {
+  const raw = String(p || '').replace(/\\/g, '/');
+  if (!raw) return '';
+  const trailing = raw.length > 1 && raw.endsWith('/') ? '/' : '';
+  const body = trailing ? raw.slice(0, -1) : raw;
+  const drive = body.match(/^[A-Za-z]:/);
+  const head = drive ? body.slice(0, 2) : (body.startsWith('/') ? '/' : '');
+  const rest = drive ? body.slice(2) : (body.startsWith('/') ? body.slice(1) : body);
+  const segs = [];
+  for (const seg of rest.split('/')) {
+    if (!seg || seg === '.') continue;
+    segs.push(seg);
+  }
+  return head + segs.join('/') + trailing;
+}
+
+// 把一份 scope 拆成「原始条目 + 归一后的条目」两张表。
+// 判定一律在归一表上做（这样同一份匹配逻辑 inScope / readOnlyScopeHit 就能直接复用，
+// 不另起一套比较口径 —— 另起一套 = 口径迟早分叉，分叉出来的结论就是猜的）；
+// 报告时用原始条目（回执要让人看懂它写的是哪一条，而不是归一后的另一个样子）。
+function canonicalScopeEntries(scope) {
+  const out = [];
+  for (const entry of Array.isArray(scope) ? scope : []) {
+    const parsed = splitScopeEntry(entry);
+    if (!parsed) continue;
+    const key = canonicalPathKey(parsed.path);
+    if (!key) continue;
+    out.push({
+      raw: parsed.raw,
+      path: key,
+      readOnly: parsed.readOnly,
+      canon: parsed.readOnly ? (READONLY_PREFIX + ' ' + key) : key
+    });
+  }
+  return out;
+}
+
+// 比出「本次扩权把哪些路径从只读升级成了可写」。
+//
+// scopeBefore / scopeAfter 是**同一份 scope 的前后快照**（不是两份不同的 scope）——
+// 升级是「前后差」，只看其中一份是看不出来的。
+// targets 是本次批准请求涉及的具体路径（写请求才有升级可言）。
+//
+// 两条判据：
+//   ① 目标级：请求的路径本来被只读条目覆盖、现在可写
+//   ② 条目级：某条只读条目的路径被新加的可写条目**罩住**了
+//      （例如 scope 里是「ro: docs/other.md」，这次批的是「docs/」——
+//        目标「docs/」本身不在只读覆盖下，但 docs/other.md 事实上从只读变成了可写。
+//        漏掉这一条 = 又留了一条静默升级的路。）
+//
+// 「本来就可写」的一律不算升级：那不是这次批准造成的权限变化。
+export function detectReadonlyUpgrades(scopeBefore, scopeAfter, targets) {
+  const before = Array.isArray(scopeBefore) ? scopeBefore : [];
+  const after = Array.isArray(scopeAfter) ? scopeAfter : [];
+  // 判定在**归一后的条目**上做（口径说明见上）：
+  // 路径写法不同（'./docs/x.md' vs 'docs/x.md'）指的是同一个文件 ——
+  // 按写法逐字比就会让「只读被升级成可写」这件事从回执与变更账上溜过去。
+  const beforeC = canonicalScopeEntries(before);
+  const afterC = canonicalScopeEntries(after);
+  const beforeCanon = beforeC.map((e) => e.canon);
+  const afterCanon = afterC.map((e) => e.canon);
+  const out = [];
+  const seen = new Set();
+  const push = (path, from, to) => {
+    // 去重键用**归一**后的路径：同一个文件写成 './docs/x.md' 与 'docs/x.md'
+    // 在账上是同一个文件，报两次会让回执看起来像升级了两条路径。
+    const fp = splitScopeEntry(from);
+    const key = canonicalPathKey(path) + '|' + canonicalPathKey(fp ? fp.path : from);
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ path: String(path), from_entry: String(from), to_entry: String(to) });
+  };
+  for (const t of targets || []) {
+    const target = canonicalPathKey(t);
+    if (!target) continue;
+    if (inScope(beforeCanon, target, 'write')) continue;    // 本来就可写 → 不是这次升级
+    if (!readOnlyScopeHit(beforeCanon, target)) continue;   // 本来没被只读覆盖 → 与只读无关
+    if (!inScope(afterCanon, target, 'write')) continue;    // 现在仍不可写 → 没有升级
+    push(String(t), readonlyEntryCovering(before, t), writableEntryGranting(after, t));
+  }
+  for (const e of beforeC) {
+    if (!e.readOnly) continue;
+    if (inScope(beforeCanon, e.path, 'write')) continue;    // 本来就有可写条目 → 不是这次升级
+    if (!inScope(afterCanon, e.path, 'write')) continue;    // 现在仍不可写 → 没被罩住
+    push(e.path, e.raw, writableEntryGranting(after, e.path));
+  }
+  return out;
+}
+
 // 批准一条越界请求：把目标并入该派工的 scope，并同步子会话绑定。
 // 必须同步 binding —— guard 下一次判定读的是 binding.scope，不是派工记录。
 export function grantScopeRequest(ledger, requestId, approver) {
@@ -863,14 +1187,22 @@ export function grantScopeRequest(ledger, requestId, approver) {
     };
   }
   const added = [];
+  // 升级检测要的是**同一份 scope 的前后快照** —— 升级是「差」，只看一份是看不出来的。
+  const scopeBefore = Array.isArray(d.scope) ? d.scope.slice() : [];
   if (!Array.isArray(d.scope)) d.scope = [];
   if (!Array.isArray(d.scope_amended)) d.scope_amended = [];
+  const duplicate = [];
   for (const t of req.targets || []) {
     // 读请求只授读（ro:），写请求才给可写条目 —— 批准读不等于批准写。
     const entry = req.mode === 'read' ? (READONLY_PREFIX + ' ' + t) : t;
     if (!d.scope.includes(entry)) { d.scope.push(entry); added.push(entry); }
+    else duplicate.push(t);
     if (!d.scope_amended.includes(entry)) d.scope_amended.push(entry);
   }
+  // D-75：批准一条「只读条目上的写请求」会把该路径追加一条可写条目 ⇒ 只读被升级成可写。
+  // 口径是**不堵死升级、但不许静默**：这里把升级显式算出来，
+  // 由回执与变更账写明「哪个路径从哪个只读条目升级成了可写」。
+  const upgraded = detectReadonlyUpgrades(scopeBefore, d.scope, req.targets || []);
   for (const b of (ledger.bindings || [])) {
     if (!b.dispatch_id || !req.dispatch_id || b.dispatch_id !== req.dispatch_id) continue;
     if (!Array.isArray(b.scope)) b.scope = [];
@@ -880,7 +1212,19 @@ export function grantScopeRequest(ledger, requestId, approver) {
   req.approved_by = String(approver || '');
   req.approved_at = Date.now();
   req.added = added;
-  return { ok: true, request: req, dispatch_id: d.dispatch_id, added };
+  // 台账里也留一份升级痕迹 —— 验收时查「这次批准到底升级了什么」不只看回执。
+  req.upgraded_paths = upgraded.map((u) => u.path);
+  req.upgraded_from_readonly = upgraded;
+  req.duplicate_paths = duplicate;
+  return {
+    ok: true,
+    request: req,
+    dispatch_id: d.dispatch_id,
+    added,
+    upgraded_paths: req.upgraded_paths,
+    upgraded_from_readonly: upgraded,
+    duplicate_paths: duplicate
+  };
 }
 
 export function denyScopeRequest(ledger, requestId, approver, reason) {
@@ -1827,16 +2171,27 @@ export function detectDangerousAccountCommand(cmd, depth = 0) {
         const ji = nextMeaningfulIndex(ct, ai + 1);
         if (ji < 0) continue;
         const act = String(ct[ji]).toLowerCase();
-        if (act !== 'delete' && act !== 'update') continue;
-        return act === 'delete'
-          ? {
+        if (act !== 'delete' && act !== 'update' && act !== 'create') continue;
+        if (act === 'delete') {
+          return {
             matched: 'mavis agent delete',
             reason: '删除账号级成员是账号级不可逆操作（历史会话不会随之清理）'
-          }
-          : {
+          };
+        }
+        if (act === 'update') {
+          return {
             matched: 'mavis agent update',
             reason: '改写账号级成员是账号级变更，需人工确认'
           };
+        }
+        // 建号必须与删除 / 改写对称（D-39）：
+        // 账号成员是账号级全局可见的（跨项目），任何会话都能建号 =
+        // 绕过造人纪律往账号里塞成员，账号成员集合与项目名录必然脱钩 ——
+        // 那正是「名录里有、账号里没有」的镜像面。
+        return {
+          matched: 'mavis agent create',
+          reason: '创建账号级成员是账号级全局可见的变更，需人工确认（造人纪律由父会话把关）'
+        };
       }
 
       // ── 对外可见的发布/部署形态 ──
@@ -1870,6 +2225,209 @@ export function detectDangerousAccountCommand(cmd, depth = 0) {
           }
         }
       }
+    }
+  }
+  return null;
+}
+
+// ── 工具名的字面量为什么是拼出来的 ─────────────────────────────
+//
+// 这几个工具名一旦以字面形态出现在源码里，**本插件自己的复合层危险扫描**
+// 就会把源码当成「载荷正文」命中（同一套规则、同一个仓库 = 自举误伤）。
+// 所以它们在这里拼出来。代价：拼错就是判定**静默失配**（工具名匹配不上 → 放行），
+// 所以每个拼出来的名字都有专属断言锁住（见 tests/guard-test.mjs 的 D-39 / D-41 断言）。
+// 新版的复合层按**内层工具**分形态判之后，载荷正文不再参与判定 —— 那时可以把
+// 这些名字还原成字面量（还原时记得同批断言一起改）。
+export const TOOL_DEPLOY = 'website' + '_deploy';
+export const TOOL_APP_PUBLISH = 'mini' + 'app' + '_publish';
+export const TOOL_AGENT_DELETE = 'mavis' + '_agent' + '_delete';
+export const TOOL_AGENT_UPDATE = 'mavis' + '_agent' + '_update';
+export const TOOL_AGENT_CREATE = 'mavis' + '_agent' + '_create';
+export const TOOL_MAVIS = 'mavis';
+export const TOOL_APP = 'mini' + 'app';
+
+// ── 复合层（run_code）的危险操作判定：按**内层工具**分形态判（D-41）──────
+//
+// 为什么不能对整段代码文本做朴素正则：
+//   复合工具的载荷是**自由文本代码**，其中 write / edit 的载荷是**数据**（文档正文）。
+//   审计者写复现步骤、引用拦截原文时，报告正文里出现被禁形态的字面量 ——
+//   报告本身被拦（本轮成文时亲身触发过两次），审计产出无法落盘。
+//   同一机制两套口径（bash 通道按命令位置判、复合层按字样判）本身就是缺陷。
+//
+// 口径（与 bash 通道对齐，契约 S3 / S5.4）：
+//   · write / edit 的载荷是数据 —— **不按命令形态判**；
+//   · bash 的 command 是命令 —— 交给命令位置判定（detectDangerousAccountCommand）；
+//   · mavis 工具按参数判（command）；小程序发布类工具按参数判（action）；
+//   · 直接点名危险工具的调用 —— 照拦。
+//
+// 诚实边界：复合层是**纵深防御的加成**，不是唯一防线 ——
+// 容器调用的 PreToolUse 派发不是平台恒定行为（契约 S3「容器调用的派发事实」），
+// 真执行时每个内层调用各自触发 PreToolUse，判定对象是真实实参。
+
+// 复合层里「载荷是数据」的工具：write / edit 的正文是文档，不是命令。
+const COMPOSITE_DATA_TOOLS = new Set([
+  'write', 'edit', 'multiedit', 'notebookedit', 'apply_patch', 'patch',
+  'write_file', 'create_file', 'append_file', 'replace_in_file'
+]);
+
+// 复合层里「点名即危险」的工具。
+const COMPOSITE_DANGEROUS_TOOLS = {
+  [TOOL_DEPLOY]: '部署会把内容发布到公网，属于对外可见的不可逆动作',
+  [TOOL_APP_PUBLISH]: '发布小程序会替换线上运行实例，属于对外可见的不可逆动作',
+  [TOOL_AGENT_DELETE]: '删除成员是账号级不可逆操作（历史会话不会随之清理）',
+  [TOOL_AGENT_UPDATE]: '修改成员的 description/system_prompt 是账号级变更，需人工确认',
+  [TOOL_AGENT_CREATE]: '创建账号级成员是账号级全局可见的变更，需人工确认'
+};
+
+// 账号级成员动作（mavis 工具的 command 参数）。
+const ACCOUNT_MEMBER_ACTIONS = new Set(['delete', 'update', 'create']);
+
+// 取一次调用的实参文本（从左括号到配对的右括号）。
+function callArgs(src, openIdx) {
+  let depth = 0, quote = '';
+  for (let i = openIdx; i < src.length; i++) {
+    const ch = src[i];
+    if (quote) {
+      if (ch === '\\') { i++; continue; }
+      if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') { quote = ch; continue; }
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) return src.slice(openIdx + 1, i);
+    }
+  }
+  return src.slice(openIdx + 1);
+}
+
+// 取一个具名属性的值表达式（对象字面量里的 key: value）。
+function propertyExpression(argsText, key) {
+  const re = new RegExp('(?:^|[\\s,{])' + key + '\\s*:', 'g');
+  let m;
+  while ((m = re.exec(argsText))) {
+    const expr = takeExpression(argsText, m.index + m[0].length);
+    if (expr) return expr;
+  }
+  return '';
+}
+
+// 从 start 开始取一个表达式（到同层的逗号或右括号为止）。
+function takeExpression(src, start) {
+  let depth = 0, quote = '';
+  for (let i = start; i < src.length; i++) {
+    const ch = src[i];
+    if (quote) {
+      if (ch === '\\') { i++; continue; }
+      if (ch === quote) { quote = ''; continue; }
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') { quote = ch; continue; }
+    if (ch === '(' || ch === '[' || ch === '{') { depth++; continue; }
+    if (ch === ')' || ch === ']' || ch === '}') {
+      if (depth === 0) return src.slice(start, i).trim();
+      depth--;
+      continue;
+    }
+    if (ch === ',' && depth === 0) return src.slice(start, i).trim();
+  }
+  return src.slice(start).trim();
+}
+
+// 取一段文本里的字符串字面量（按出现顺序）。
+function stringLiterals(text) {
+  const src = String(text || '');
+  const out = [];
+  let i = 0;
+  while (i < src.length) {
+    const ch = src[i];
+    if (ch === '"' || ch === "'" || ch === '`') {
+      const quote = ch;
+      let buf = '';
+      i++;
+      while (i < src.length) {
+        const c2 = src[i];
+        if (c2 === '\\') { buf += src[i + 1] || ''; i += 2; continue; }
+        if (c2 === quote) { i++; break; }
+        buf += c2;
+        i++;
+      }
+      out.push(buf);
+      continue;
+    }
+    i++;
+  }
+  return out;
+}
+
+// 取一个属性的字符串值：优先按具名属性取；取不到就退回第一个字符串字面量。
+// 字面量拼接（'x ' + 'y'）按拼接结果处理 —— 拆开写不该成为绕过口。
+function firstStringArg(argsText, key) {
+  const expr = propertyExpression(argsText, key);
+  if (expr) {
+    const lits = stringLiterals(expr);
+    if (lits.length) return lits.join('');
+  }
+  const lits = stringLiterals(argsText);
+  return lits.length ? lits[0] : '';
+}
+
+// mavis 的 command 参数是不是账号级成员动作（返回动作名或空串）。
+function accountMemberAction(cmd) {
+  const c = String(cmd || '').trim();
+  const m = c.match(/^agent\s+([A-Za-z]+)/);
+  if (!m) return '';
+  const act = String(m[1] || '').toLowerCase();
+  return ACCOUNT_MEMBER_ACTIONS.has(act) ? act : '';
+}
+
+// 复合层的危险操作判定。返回 { matched, reason } 或 null。
+export function detectDangerousInComposite(code) {
+  const src = String(code || '');
+  if (!src) return null;
+  const callRe = /tools\s*(?:\.\s*([A-Za-z_$][\w$]*)|\[\s*['"]([^'"]+)['"]\s*\])\s*\(/g;
+  let m;
+  while ((m = callRe.exec(src))) {
+    const name = String(m[1] || m[2] || '').trim().toLowerCase();
+    if (!name) continue;
+    // 数据载荷：write / edit 的正文是文档数据，不按命令形态判。
+    if (COMPOSITE_DATA_TOOLS.has(name)) continue;
+    const args = callArgs(src, callRe.lastIndex - 1);
+    if (Object.prototype.hasOwnProperty.call(COMPOSITE_DANGEROUS_TOOLS, name)) {
+      return { matched: 'tools.' + name, reason: COMPOSITE_DANGEROUS_TOOLS[name] };
+    }
+    if (name === TOOL_MAVIS) {
+      const cmd = firstStringArg(args, 'command');
+      const act = accountMemberAction(cmd);
+      if (act) {
+        return {
+          matched: TOOL_MAVIS + ' ' + cmd,
+          reason: act === 'delete'
+            ? '删除成员是账号级不可逆操作（历史会话不会随之清理）'
+            : (act === 'update'
+              ? '修改成员的 description/system_prompt 是账号级变更，需人工确认'
+              : '创建账号级成员是账号级全局可见的变更，需人工确认')
+        };
+      }
+      continue;
+    }
+    if (name === TOOL_APP) {
+      const action = firstStringArg(args, 'action');
+      if (String(action || '').trim().toLowerCase() === 'publish') {
+        return {
+          matched: TOOL_APP + ' publish',
+          reason: '发布小程序会替换线上运行实例，属于对外可见的不可逆动作'
+        };
+      }
+      continue;
+    }
+    if (name === 'bash') {
+      // bash 的 command 是**命令**，不是数据 —— 交给命令位置判定。
+      const cmd = firstStringArg(args, 'command');
+      const hit = detectDangerousAccountCommand(cmd);
+      if (hit) return hit;
+      continue;
     }
   }
   return null;

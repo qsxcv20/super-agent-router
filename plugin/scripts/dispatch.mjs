@@ -16,7 +16,9 @@ import {
   MAX_ACTIVE_DISPATCHES, MAX_TOTAL_DISPATCHES,
   resolveAgentKey, extractBriefMarkers, reapExpiredDispatches, normScopeEntry,
   touchesSuperagentPath, memberTier, TIER_FULL, TIER_SCOPED,
-  isPrivateMemoryEntry, PRIVATE_MEMORY_DIRS
+  isPrivateMemoryEntry, PRIVATE_MEMORY_DIRS,
+  accountMemberNames, accountMemberExists, rosterMemberNames, staleRosterMembers,
+  readRoster, writeGateTrace
 } from './lib.mjs';
 import { readLessons, countEntries, readRecords, lessonsStatusLine } from './lessons.mjs';
 
@@ -144,6 +146,55 @@ for (const raw of scope) {
   }
 }
 
+// === 闸门 1d：目标成员必须存在于账号（D-37）===
+//
+// 为什么这道闸门必须有：派工到「账号里不存在的成员」**不会启动子会话**，
+// 但台账照样会写一条 state:'active' ——
+// ① 占掉一个并发名额与一个累计名额；
+// ② 同 SCOPE 的后续派工被「组队冲突」误拦；
+// ③ 教训与履历照常注入 brief，外观完全正常 ⇒ **静默失效**（最长 2 小时）。
+// 所以必须在**写台账之前**拦：拦晚了，台账里那条记录已经占住名额了。
+//
+// 账号名单只有一处计算（lib.mjs 的 accountMemberNames）——
+// 注入侧披露的陈旧名单与这里拒绝的派工必须是同一份口径，两处各算各的迟早长歪。
+//
+// 目标成员的解析提前到这里（闸门 1d 要用它）。
+const agent = String(tInput.agent_name || '');
+const promptAgent = extractBriefMarkers(prompt).agent;
+const agentKey = resolveAgentKey({
+  agentType: input.agent_type,
+  promptAgent,
+  toolAgentName: agent
+});
+const accountCtx = accountMemberNames();
+const rosterCtx = readRoster();
+const declaredMembers = rosterMemberNames(rosterCtx);
+const targetMember = String(agentKey || agent || '');
+if (accountCtx.available) {
+  if (!accountMemberExists(accountCtx.names, targetMember)) {
+    const staleHit = declaredMembers.includes(targetMember);
+    deny('[super-agent-router] 派工被拒：目标成员「' + targetMember + '」在账号里不存在' +
+      (staleHit ? '（该成员在项目名录里登记过，账号侧没有 —— 这是**陈旧成员**）' : '') + '。' +
+      '派工到一个不存在的成员不会启动子会话，却会占掉一个并发名额与一个累计名额，' +
+      '并让同 SCOPE 的后续派工被「组队冲突」误拦 —— 外观看起来完全正常（**静默失效**）。' +
+      '台账不会留下任何记录。请先在账号里建好该成员，或把它从项目名录里移除，再重新派工。' +
+      '（账号成员目录：' + accountCtx.dir + '）');
+  }
+} else {
+  // 账号名单读不出来 = **无法核验**目标成员是否存在（不是「成员不存在」）。
+  //
+  // 这里不因为「取不到」就拒掉整个派工：账号成员是**账号级事实**，
+  // 没有账号环境的项目（测试夹具等）里根本没有这份名单 ——
+  // 据此拒派等于让整套编排在没有账号环境的项目里全停摆，连正常派工都发不出去。
+  // 但这件事**不许静默**：写进痕迹，并在会话注入里披露（父会话看得见）。
+  //
+  // 残余风险：账号名单不可用期间，「派给不存在的成员」这一条守不住 ——
+  // 账号名单可用时（生产运行时 / 显式指定 SAR_ACCOUNT_AGENTS_DIR 的夹具）才有判定。
+  writeGateTrace('account_member_list_unavailable',
+    'target=' + targetMember + ' | roster_declared=' + declaredMembers.includes(targetMember) +
+    ' | ' + accountCtx.error);
+}
+
 const ledger = readLedger();
 if (ledger.readable === false) {
   deny('[super-agent-router] 派工登记失败：' + (ledger.error || '派工台账不可用') +
@@ -201,15 +252,8 @@ if (total >= totalCap) {
 }
 
 // 抓目标成员的错题本规则
-const agent = String(tInput.agent_name || '');
-// 成员命名（D-12）：显示名与 routing id 是两套命名空间。
-// 台账写 routing id，反查也用 routing id —— 两边用同一套 key 才不会互相看不见。
-const promptAgent = extractBriefMarkers(prompt).agent;
-const agentKey = resolveAgentKey({
-  agentType: input.agent_type,
-  promptAgent,
-  toolAgentName: agent
-});
+// （目标成员与 agentKey 已在闸门 1d 解析好 —— 那里先要拿它判存在性；
+//   命名口径见 D-12：台账写 routing id，反查也用 routing id。）
 // 派工那一刻的**权限等级快照**（F1-4）。
 //
 // 为什么快照：worker 操作的等级 = 派工时的等级。
@@ -297,6 +341,45 @@ if (records.length) {
 } else {
   blocks.push('[super-agent-router] ' + (agentKey || agent) + ' 的实战记录：0 条' +
     '（该成员暂无验收通过的成果）。');
+}
+
+// ── 会话复用提示（契约 S4.5）────────────────────────────────
+//
+// 为什么要在这里提示：新开一个子会话 = 那位成员要**重新读一遍**它需要读的东西
+// （方法论、契约、台账、相关脚本、既有报告）。同一专项的连续工作反复重开，
+// 上下文预算就被「重复读仓库」吃掉，窗口越堆越多。
+//
+// 判据只有一条：**该成员是否已有一个会话，其 binding.scope 覆盖本单要动的路径**。
+// 覆盖 ⇒ 那个会话的上下文已经加载了这些文件 ⇒ 追加即可，不必重开。
+//
+// 这只是**提示**，不阻断派工 —— 边界不同、专项不同、上下文太旧的情况都该新开。
+// 阻断会让「为了省上下文」变成「为了让机制闭嘴」，那是本末倒置。
+//
+// ⚠️ 复用要**人/父会话**用追加的方式去做；派工闸门只负责把「有得复用」这件事说出来。
+const reusable = (ledger.bindings || []).filter((b) => {
+  // 必须有 session_id —— 没有会话就没有可追加的上下文。
+  if (!b || !b.session_id) return false;
+  if (String(b.agent_key || b.agent || '') !== String(agentKey || agent || '')) return false;
+  const bs = Array.isArray(b.scope) ? b.scope : [];
+  if (!bs.length) return false;
+  // 本单 scope 的每个路径，都要被该 binding 的某条目覆盖（或该 binding 是 full 等级）。
+  return scope.every((entry) => bs.some((e) => {
+    const raw = String(e || '').replace(/^ro:\s*/, '');
+    const t = String(entry || '').replace(/^ro:\s*/, '');
+    if (!raw || !t) return false;
+    if (raw === '*') return true;
+    const rr = raw.replace(/\\/g, '/').toLowerCase();
+    const tt = t.replace(/\\/g, '/').toLowerCase();
+    if (rr === tt) return true;
+    // 条目是目录（以 / 结尾）⇒ 覆盖其下所有路径
+    return rr.endsWith('/') && tt.startsWith(rr);
+  }));
+});
+if (reusable.length) {
+  blocks.push('[super-agent-router] 复用提示：该成员已有 ' + reusable.length +
+    ' 个会话的上下文覆盖本单 SCOPE。若那些会话仍可用，**优先追加**而不是新开子会话 ——' +
+    '新开会让它把方法论、契约、台账、相关脚本重读一遍（契约 S4.5）。' +
+    '注意：追加**不会**自动扩大边界，要加路径走管理员扩权。');
 }
 
 process.stdout.write(JSON.stringify({

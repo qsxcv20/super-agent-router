@@ -242,5 +242,29 @@ const base = (id, over = {}) => Object.assign({
   ok('写回保留 bindings 与 counters', Array.isArray(led.bindings) && !!led.counters);
 }
 
+// ── D-37：被拒的派工不占名额、不留记录（台账生命周期视角）────
+//
+// 派工到一个账号里不存在的成员时，子会话不会启动 —— 但台账以前照样写一条
+// state:'active'，于是占住一个并发名额与一个累计名额，
+// 同 SCOPE 的后续派工被「组队冲突」误拦 ⇒ 静默失效。
+{
+  const acct = fs.mkdtempSync(path.join(os.tmpdir(), 'sar-acct-'));
+  fs.mkdirSync(path.join(acct, 'worker'), { recursive: true });
+  const dir = seed([]);
+  const r = spawnSync('node', [path.join(PLUGIN_ROOT, 'scripts', 'dispatch.mjs')], {
+    input: JSON.stringify({
+      hook_event_name: 'PreToolUse', tool_name: 'task', session_id: 'mvs_d37', turn_id: 't1',
+      tool_input: { agent_name: 'sa-ghost-member', prompt: 'SCOPE: docs/audit/d37.md' }
+    }),
+    encoding: 'utf8',
+    env: { ...process.env, PLUGIN_DATA: dir, MINIMAX_PROJECT_DIR: dir, SAR_ACCOUNT_AGENTS_DIR: acct }
+  });
+  const out = String(r.stdout || '');
+  ok('D-37 派工到不存在的成员被拒', out.includes('deny') && out.includes('在账号里不存在'), out.slice(0, 200));
+  const led = readLedger(dir);
+  ok('D-37 被拒的派工不留台账记录', led.dispatches.length === 0, '记录数=' + led.dispatches.length);
+  ok('D-37 被拒的派工不占累计名额', !led.counters || !led.counters['mvs_d37'], JSON.stringify(led.counters || {}));
+}
+
 console.log(fail === 0 ? '>>> DISPATCH-RELEASE ALL PASS' : '>>> DISPATCH-RELEASE FAIL ' + fail);
 process.exit(fail === 0 ? 0 : 1);

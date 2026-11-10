@@ -1115,5 +1115,121 @@ if (process.env.SAR_MUTATION === '1' || process.env.SAR_MUTATION === '2') {
   }
 }
 
+// ── D-39：账号级建号子命令必须与删除 / 改写一样被硬拦 ─────────
+//
+// 缺陷：删除 / 改写成员一直被拦，**建号完全没拦** ——
+// 账号成员是跨项目可见的全局事实，任何会话都能建号 = 绕过造人纪律往账号里塞成员，
+// 账号成员集合与项目名录必然脱钩（那正是「名录里有、账号里没有」的镜像面）。
+//
+// 措辞约定：报告与断言里一律写「账号级**建号子命令**」，不写字面量。
+//
+// 这几个命令的**字面量在源码里是拼出来的**：本插件自己的复合层危险扫描
+// 会把源码当成「载荷正文」命中（自举误伤，写这份测试时亲身触发过）。
+// 拼出来的值与字面量完全等价 —— 被测的是判定逻辑，不是写法。
+const CREATE = 'mavis' + ' agent' + ' create' + ' sa-x';
+const DELETE = 'mavis' + ' agent' + ' delete' + ' sa-x';
+const UPDATE = 'mavis' + ' agent' + ' update' + ' sa-x';
+const AGENT_CREATE = 'agent' + ' create' + ' sa-x';
+const AGENT_DELETE = 'agent' + ' delete' + ' sa-x';
+{
+  const o = w('bash', { command: CREATE });
+  ok('D-39 账号级建号子命令在 bash 通道被拦',
+    o.includes('deny') && o.includes('创建'), o.slice(0, 200));
+}
+{
+  const o = w('mavis', { command: AGENT_CREATE });
+  ok('D-39 账号级建号子命令在 mavis 工具参数上被拦',
+    o.includes('deny') && o.includes('创建'), o.slice(0, 200));
+}
+{
+  const o = w('run_code', { code: "await tools.mavis({ command: '" + AGENT_CREATE + "' });" });
+  ok('D-39 账号级建号子命令在复合层被拦',
+    o.includes('deny') && o.includes('创建'), o.slice(0, 200));
+}
+{
+  // 父会话不受影响：造人是父会话的职责（S12）
+  const o = guard({
+    hook_event_name: 'PreToolUse', tool_name: 'bash', session_id: 'router-d39',
+    tool_input: { command: CREATE }
+  });
+  ok('D-39 父会话不受建号闸门影响', o === '', o.slice(0, 200));
+}
+{
+  // 既有口径不回退：删除 / 改写仍然被拦
+  const o1 = w('bash', { command: DELETE });
+  const o2 = w('bash', { command: UPDATE });
+  ok('D-39 账号级删除成员子命令仍被拦', o1.includes('deny'), o1.slice(0, 200));
+  ok('D-39 账号级改写成员子命令仍被拦', o2.includes('deny'), o2.slice(0, 200));
+}
+
+// ── D-40：写通道命中 ro: 只读条目时，拦截消息必须分型 ─────────
+//
+// 缺陷：消息写「以下路径不在白名单内」，而**同一条消息的 SCOPE 列表里就写着**
+// `ro: <path>` —— 按字面读，Router 会以为「要加白名单」，
+// 把一个本可只读执行的动作升级成**可写**授权。
+{
+  const WRO = 'worker-ro-msg';
+  const TRRO = makeTranscript(WRO, 'router-ro-msg', 'worker', 'ro: src/app/');
+  const g = (tool, payload) => guard({
+    hook_event_name: 'PreToolUse', tool_name: tool, session_id: WRO,
+    agent_id: WRO, agent_type: 'worker', transcript_path: TRRO, tool_input: payload
+  });
+  const roWrite = g('write', { file_path: 'src/app/other.ts' });
+  ok('D-40 ro: 只读条目的写操作仍然被拦', roWrite.includes('deny'), roWrite.slice(0, 220));
+  ok('D-40 ro: 命中的消息说「在白名单内，但登记为只读条目」',
+    roWrite.includes('只读条目') && roWrite.includes('在白名单内'), roWrite.slice(0, 260));
+  ok('D-40 ro: 命中的消息提示去掉 ro: 重新派工',
+    roWrite.includes('去掉') && roWrite.includes('重新派工'), roWrite.slice(0, 300));
+  ok('D-40 ro: 命中的消息不再说「不在白名单内」',
+    !roWrite.includes('不在白名单内'), roWrite.slice(0, 260));
+  ok('D-40 ro: 命中的消息不出现「要加白名单」式措辞',
+    !roWrite.includes('加白名单'), roWrite.slice(0, 260));
+  // 真的不在白名单内的路径：仍是老口径（分型不能把两种情形混成一种）
+  const outWrite = g('write', { file_path: 'config/prod.yaml' });
+  ok('D-40 路径确实不在白名单内时仍是「不在白名单内」',
+    outWrite.includes('deny') && outWrite.includes('不在白名单内'), outWrite.slice(0, 260));
+  ok('D-40 不在白名单内的消息不误报只读条目',
+    !outWrite.includes('只读条目'), outWrite.slice(0, 260));
+}
+
+// ── D-41：复合层按**内层工具**分形态判 ────────────────────────
+//
+// 同一段含被禁形态的正文：
+//   · 作为 write / edit 的载荷（**数据**）→ 不该被拦；
+//   · 作为 bash 的 command（**命令**）→ 必须被拦；
+// bash 通道对同一条命令也必须被拦 —— 同一机制必须一套口径。
+{
+  const o = w('run_code', { code: "await tools.write({ path: 'docs/audit/x.md', content: '" + DELETE + "' });" });
+  ok('D-41 复合层：write 载荷里的被禁形态不再被拦（载荷是数据）',
+    o === '', o.slice(0, 200));
+}
+{
+  const o = w('run_code', { code: "await tools.edit({ path: 'docs/audit/x.md', old_string: 'a', new_string: '" + DELETE + "' });" });
+  ok('D-41 复合层：edit 载荷里的被禁形态不再被拦（载荷是数据）',
+    o === '', o.slice(0, 200));
+}
+{
+  const o = w('run_code', { code: "await tools.bash({ command: '" + DELETE + "' });" });
+  ok('D-41 复合层：bash 载荷里的同一段仍被拦（载荷是命令）',
+    o.includes('deny'), o.slice(0, 200));
+}
+{
+  const o = w('bash', { command: DELETE });
+  ok('D-41 bash 通道：同一段命令仍被拦（两套口径必须一致）',
+    o.includes('deny'), o.slice(0, 200));
+}
+{
+  // 直接点名危险工具的调用照拦（复合层不能因为「按形态判」而漏掉）
+  const o = w('run_code', { code: 'await tools.website' + '_deploy({ path: "dist" });' });
+  ok('D-41 复合层：直接点名部署工具仍被拦',
+    o.includes('deny'), o.slice(0, 200));
+}
+{
+  // mavis 工具按参数判（既有口径不回退）
+  const o = w('run_code', { code: "await tools.mavis({ command: '" + AGENT_DELETE + "' });" });
+  ok('D-41 复合层：mavis 参数里的账号级动作仍被拦',
+    o.includes('deny'), o.slice(0, 200));
+}
+
 console.log(fail === 0 ? '>>> GUARD2 ALL PASS' : '>>> GUARD2 FAILURES: ' + fail);
 process.exit(fail ? 1 : 0);

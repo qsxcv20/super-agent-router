@@ -21,8 +21,8 @@
       "reject": "跨文件重构、多步调研、需要判断的取舍",
       "method": null,
       "tier": "full",
-      "tier_granted_by": "router",
-      "tier_granted_at": "2026-11-10T08:21:27.975Z"
+      "tier_granted_by": "mvs_9bdda202ae274c909a5b4352fc45a471",
+      "tier_granted_at": "2026-11-10T12:58:18.424Z"
     },
     {
       "name": "verifier",
@@ -44,8 +44,8 @@
       "created_for": "把插件包升到 v0.4.0 并补齐发布说明",
       "created_at": "2026-11-09T12:48:07.216Z",
       "tier": "full",
-      "tier_granted_by": "router",
-      "tier_granted_at": "2026-11-10T08:21:27.702Z"
+      "tier_granted_by": "mvs_9bdda202ae274c909a5b4352fc45a471",
+      "tier_granted_at": "2026-11-10T12:58:20.238Z"
     },
     {
       "name": "sa-orchestration-audit",
@@ -58,8 +58,8 @@
       "created_for": "审计 v0.4.0 编排机制的缺陷，为 v0.5.0 提供实证输入",
       "created_at": "2026-11-09T14:47:48.889Z",
       "tier": "full",
-      "tier_granted_by": "router",
-      "tier_granted_at": "2026-11-10T08:21:27.756Z"
+      "tier_granted_by": "mvs_9bdda202ae274c909a5b4352fc45a471",
+      "tier_granted_at": "2026-11-10T12:58:21.954Z"
     },
     {
       "name": "sa-context-trace",
@@ -72,8 +72,8 @@
       "created_for": "评估同组成员是否需要共享上下文，为 v0.5.0 提供事实依据",
       "created_at": "2026-11-09T14:47:48.954Z",
       "tier": "full",
-      "tier_granted_by": "router",
-      "tier_granted_at": "2026-11-10T08:21:27.809Z"
+      "tier_granted_by": "mvs_9bdda202ae274c909a5b4352fc45a471",
+      "tier_granted_at": "2026-11-10T12:57:48.468Z"
     },
     {
       "name": "sa-mechanism-fix",
@@ -86,8 +86,8 @@
       "created_for": "按缺陷台账 D- 编号改造 v0.4.0 的边界判定，发布 v0.5.0",
       "created_at": "2026-11-10T00:08:44.558Z",
       "tier": "full",
-      "tier_granted_by": "router",
-      "tier_granted_at": "2026-11-10T08:21:27.863Z"
+      "tier_granted_by": "mvs_9bdda202ae274c909a5b4352fc45a471",
+      "tier_granted_at": "2026-11-10T12:58:23.927Z"
     },
     {
       "name": "sa-gate-integrity",
@@ -100,8 +100,8 @@
       "created_for": "按缺陷台账 D- 编号改造 v0.4.0 的记录闸门，发布 v0.5.0",
       "created_at": "2026-11-10T00:08:44.613Z",
       "tier": "full",
-      "tier_granted_by": "router",
-      "tier_granted_at": "2026-11-10T08:21:27.917Z"
+      "tier_granted_by": "mvs_9bdda202ae274c909a5b4352fc45a471",
+      "tier_granted_at": "2026-11-10T12:58:25.490Z"
     }
   ]
 }

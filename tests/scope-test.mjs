@@ -15,7 +15,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 
 const PLUGIN_ROOT = process.env.SAR_PLUGIN_ROOT ||
   'C:\\Users\\yang2\\.minimax\\plugins\\super-agent-router';
@@ -26,13 +26,21 @@ fs.mkdirSync(path.join(PROJ, 'src', 'app'), { recursive: true });
 fs.mkdirSync(DATA, { recursive: true });
 fs.writeFileSync(path.join(PROJ, 'src', 'app', 'login.ts'), 'x', 'utf8');
 
+// 账号成员夹具（D-37）。
+// 账号成员是**跨项目的账号级事实**：夹具不自带账号环境，派工侧就判定
+// 「账号名单不可用」而**不判存在性**（那就等于没有账号事实可判）。
+// 所以夹具必须自带完整环境：这里造一份账号成员目录并显式传进去。
+const ACCOUNT = path.join(tmp, 'account');
+fs.mkdirSync(path.join(ACCOUNT, 'worker'), { recursive: true });
+fs.mkdirSync(path.join(ACCOUNT, 'sa-real-member'), { recursive: true });
+
 let fail = 0;
 const ok = (l, c, e = '') => { if (!c) fail++; console.log((c ? 'PASS ' : 'FAIL ') + l + (e ? ' :: ' + e : '')); };
 
 function run(script, payload, env) {
   const r = spawnSync('node', [path.join(PLUGIN_ROOT, 'scripts', script)], {
     input: JSON.stringify(payload), encoding: 'utf8', timeout: 10000,
-    env: { ...process.env, PLUGIN_ROOT, PLUGIN_DATA: DATA, MINIMAX_PROJECT_DIR: PROJ, ...(env || {}) }
+    env: { ...process.env, PLUGIN_ROOT, PLUGIN_DATA: DATA, MINIMAX_PROJECT_DIR: PROJ, SAR_ACCOUNT_AGENTS_DIR: ACCOUNT, ...(env || {}) }
   });
   return (r.stdout || '').trim();
 }
@@ -241,6 +249,62 @@ function workerGuard(tool, payload, session, tr) {
   const quoted = lib.extractScopeDetail('SCOPE: "' + ABS + '"');
   ok('F-04 双引号包裹的含空格路径同样是一个完整条目',
     quoted.entries.length === 1 && quoted.entries[0] === ABS, JSON.stringify(quoted.entries));
+}
+
+// ── D-37：派工必须校验目标成员存在于账号 ─────────────────────
+//
+// 缺陷：派工到「账号里不存在的成员」不会启动子会话，台账却照样写一条 active ——
+// ① 占掉一个并发名额与一个累计名额；
+// ② 同 SCOPE 的后续派工被「组队冲突」误拦；
+// ③ 教训与履历照常注入，外观完全正常 ⇒ 静默失效。
+{
+  const ledgerPath = path.join(DATA, 'dispatches.json');
+  const countDispatches = () => {
+    try { return JSON.parse(fs.readFileSync(ledgerPath, 'utf8')).dispatches.length; }
+    catch { return 0; }
+  };
+  const before = countDispatches();
+  const bad = run('dispatch.mjs', {
+    hook_event_name: 'PreToolUse', tool_name: 'task', session_id: 'router-d37', turn_id: 't-d37',
+    tool_input: { agent_name: 'sa-ghost-member', prompt: 'SCOPE: src/app/d37-target.ts' }
+  });
+  ok('D-37 派工到账号里不存在的成员被拒', bad.includes('deny') && bad.includes('在账号里不存在'), bad.slice(0, 200));
+  ok('D-37 被拒的派工不新增任何台账记录', countDispatches() === before, 'before=' + before + ' after=' + countDispatches());
+  // 派工到账号里真实存在的成员：不受影响（这条断言锁住「不要把闸门写成一律拒派」）
+  const good = run('dispatch.mjs', {
+    hook_event_name: 'PreToolUse', tool_name: 'task', session_id: 'router-d37b', turn_id: 't-d37b',
+    tool_input: { agent_name: 'sa-real-member', prompt: 'SCOPE: src/app/d37-target.ts' }
+  });
+  ok('D-37 派工到账号里真实存在的成员不受影响', !good.includes('deny'), good.slice(0, 200));
+  ok('D-37 正常派工仍然写台账', countDispatches() === before + 1, 'before=' + before + ' after=' + countDispatches());
+}
+
+// ── D-82：带尾随空格的目录不得被当成插件专属数据目录 ───────
+//
+// 缺陷：Windows 上「super-agent-router」与「super-agent-router 」（末尾多一个空格）
+// 是**两个不同的目录**，可以同时存在。旧判定先 trim 整个路径再取 basename，
+// 于是后者被误判成前者 ⇒ 运行时若 PLUGIN_DATA 指向那个空目录，
+// readLedger() 读到**空台账**（格式合法、看着正常）⇒
+// 「记录丢了 ⇒ 视同没有在飞派工」⇒ 冲突检测与名额检测**全盲**（D-10 那一族的静默失效）。
+{
+  // 这个块在文件作用域外，拿不到上面块里的 lib —— 自己导入一份。
+  //
+  // ⚠️ 必须导**仓库副本**，不是 PLUGIN_ROOT（安装副本）：这条断言验的是
+  // 本仓库这一版实现，安装副本可能还是旧版（未部署）⇒ 断言会因
+  // 「函数不存在/行为是旧的」而红，看起来像代码坏了，其实是部署时差。
+  const REPO_LIB = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'plugin', 'scripts', 'lib.mjs');
+  const libD82 = await import(pathToFileURL(REPO_LIB).href);
+  const HOOKS = 'C:/x/plugin-data/hooks/';
+  ok('D-82 正常的插件数据目录被认出来',
+    libD82.isPluginOwnDataDir(HOOKS + 'super-agent-router') === true);
+  ok('D-82 带尾随空格的目录**不**被认成插件数据目录',
+    libD82.isPluginOwnDataDir(HOOKS + 'super-agent-router ') === false);
+  ok('D-82 尾部分隔符不算目录名的一部分',
+    libD82.isPluginOwnDataDir(HOOKS + 'super-agent-router/') === true);
+  ok('D-82 别的插件目录不被认成本插件的',
+    libD82.isPluginOwnDataDir(HOOKS + 'superpowers') === false);
+  ok('D-82 空路径不认',
+    libD82.isPluginOwnDataDir('') === false && libD82.isPluginOwnDataDir('   ') === false);
 }
 
 console.log(fail === 0 ? '>>> SCOPE ALL PASS' : '>>> SCOPE FAILURES: ' + fail);
