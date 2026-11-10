@@ -215,14 +215,18 @@ v0.5.0 起，worker 的 scope 来自它自己 transcript 里的派工原文；�
 
 ```powershell
 $env:PLUGIN_DATA = "$env:USERPROFILE\.minimax\v2\plugin-data\hooks\super-agent-router"
-node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\release-slot.mjs" '{"dispatch_id":"dsp_xxx"}'
+node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\release-slot.mjs" --dispatch dsp_xxx
 ```
 
 释放某个父会话下的全部在飞派工：
 
 ```powershell
-node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\release-slot.mjs" '{"parent_session_id":"mvs_xxx"}'
+node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\release-slot.mjs" --parent mvs_xxx
 ```
+
+> **用开关而不是 JSON**：PowerShell 的原生参数解析会吃掉 JSON 里的双引号 ——
+> `node x.mjs '{"id":"a"}'` 实际收到 `{"id:a}`（非法 JSON）。
+> 开关形式不含引号，跨 shell 一致。JSON 形式仍然支持，但在 PowerShell 里要自己转义。
 
 只把仍在飞的（`active`）记录翻成 `aborted`，已完成的记录不动。
 id 写错或台账读不出来时会直接报错退出，不会「假装释放成功」。

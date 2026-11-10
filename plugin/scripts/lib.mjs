@@ -853,9 +853,12 @@ export const DANGEROUS_COMMAND = /\b(git\s+push|gh\s+(pr|release)\s+create|npm\s
 //   而 mavis 是本机真实存在的 CLI，命令文本会被 shell 真的执行。
 //
 // 为什么不能指望复合层（run_code）兜底：
-//   平台不对 run_code 容器派发 PreToolUse（实测：全库 1640 次 run_code 调用
-//   0 次被护栏直接拒答，同期内层子调用被拒 153 次）——
+//   容器调用的 PreToolUse 派发**不是平台恒定行为** —— 同一份纯计算容器代码，
+//   2026-11-10 10:22 的子会话没被派发（日志探针实测：同会话的容器内 read 有条目、
+//   外层 run_code 无条目），14:29 与 15:10 的子会话却被派发并当场拒答。
+//   派发与否随会话而变 ⇒ 复合层只能当纵深防御的加成，不能当唯一防线，
 //   危险操作的拦截必须在内层调用各自判定这一层做到位。
+//   （D-26 的原结论「平台不对 run_code 容器派发 PreToolUse」已被金丝雀对照证伪，勿再写回）
 //
 // 判定对象是「命令形态」：命令位置上的 CLI + 子命令 + 动作。
 // 只在命令位置匹配，文本别处出现这些词不算：
@@ -1593,9 +1596,13 @@ export function writeGateTrace(kind, detail) {
     // 无条件再拼一层 hooks/super-agent-router，运行时痕迹就落到多套一层的怪路径 ——
     // 痕迹**确实写了**，但按文档给的路径去找找不到，等于半个静默失效（D-29）。
     // 所以按目录名判断：已经是本插件目录就直接写进去，否则才补一层。
-    const dir = /hooks[\\/]super-agent-router$/i.test(base)
-      ? base
-      : path.join(base, 'hooks', 'super-agent-router');
+    // 判定用 basename 而不是正则锚末尾：path.basename 会忽略末尾的分隔符，
+    // 所以 PLUGIN_DATA 带尾斜杠时也判得对（正则 `...$` 会被尾斜杠打破，
+    // 于是又去多套一层 —— 独立验收 F4 实测出来的洞）。
+    const isPluginDir =
+      path.basename(base).toLowerCase() === 'super-agent-router' &&
+      path.basename(path.dirname(base)).toLowerCase() === 'hooks';
+    const dir = isPluginDir ? base : path.join(base, 'hooks', 'super-agent-router');
     fs.mkdirSync(dir, { recursive: true });
     fs.appendFileSync(
       path.join(dir, 'gate-trace.jsonl'),

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Super Agent Router v0.5.1 · 插件描述与思维导图</title>
+<title>Super Agent Router · 架构说明与思维导图</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -164,13 +164,13 @@
   <div class="hero">
     <span class="kicker">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>
-      MiniMax Code 本地插件 · v0.5.1
+      MiniMax Code 本地插件 · 架构说明
     </span>
     <h1>Super Agent Router</h1>
     <p class="lede">把「会话」当系统用的一套编排机制：任务来了自动按<strong>专项归属</strong>路由到合适的成员、组队派工、独立验收，再把成败沉淀成错题本与实战记录。它与提示词里的君子协定不同 —— 边界由 Hook 程序层强制执行，算不出来就<b>拒绝</b>，而不是放行。</p>
     <dl class="metabar">
-      <div><dt>插件版本</dt><dd>0.5.1<small>主动触发重做</small></dd></div>
-      <div><dt>Hook 事件</dt><dd>4<small>类 / 7 条规则</small></dd></div>
+      <div><dt>版本</dt><dd>见 CHANGELOG<small>机制细节以 contract.md 为准</small></dd></div>
+      <div><dt>Hook 事件</dt><dd>4<small>类：会话 / 提问 / 工具 / 收尾</small></dd></div>
       <div><dt>运行时脚本</dt><dd>11<small>个 .mjs</small></dd></div>
       <div><dt>默认成员数</dt><dd>0<small>能直做就直做</small></dd></div>
     </dl>
@@ -287,7 +287,7 @@
     <div class="map-foot">
       <span><i style="background:var(--primary)"></i>机制与流程</span>
       <span><i style="background:var(--accent)"></i>边界与代价</span>
-      <span>所有数字取自插件包 v0.5.1 实际文件，非文档推断</span>
+      <span>本页只写<b>结构性</b>内容；版本相关的一切以 <span class="mono">plugin/CHANGELOG.md</span> 与 <span class="mono">references/contract.md</span> 为准</span>
     </div>
   </section>
 
@@ -318,7 +318,7 @@
         <tr><td><span class="mono">SubagentStop</span></td><td class="dim">—</td><td class="mono">watchdog.mjs</td><td>交付核验：空交付 / 拿不出证据 → 要求补证；路径声称需真实落盘</td></tr>
       </tbody>
     </table>
-    <div class="note"><b>协议文件 8 份：</b><span class="mono">teams / routing / brief / bootstrap / review / records / scope / contract</span>。其中 <span class="mono">contract.md</span> 是<b>契约单一事实源</b>（S1~S11：条目模板、编号命名空间、scope 与通道语义、台账口径、触发语义）—— brief 只引用，不复述。</div>
+    <div class="note"><b>协议文件 8 份：</b><span class="mono">teams / routing / brief / bootstrap / review / records / scope / contract</span>。其中 <span class="mono">contract.md</span> 是<b>契约单一事实源</b>（S1 起，条款编号见文件本身：条目模板、编号命名空间、scope 与通道语义、台账口径、触发语义、主 agent 定位）—— brief 只引用，不复述。</div>
   </section>
 
   <section id="scope">
@@ -365,7 +365,7 @@
   </section>
 
   <section id="changes">
-    <div class="sec-head"><span class="n">06</span><h2>v0.5.0 → v0.5.1 的六项关键变更</h2></div>
+    <div class="sec-head"><span class="n">06</span><h2>六条硬规矩（不随版本改变）</h2></div>
     <div class="changes">
       <div class="chg">
         <div class="hd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg><b>解析不到边界 = 拒绝</b></div>
@@ -385,7 +385,7 @@
       </div>
       <div class="chg">
         <div class="hd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3M11 8v6M8 11h6"/></svg><b>主动触发粗筛重做</b></div>
-        <p>不再靠「长度够长 + 出现关键词」粗判：意图词必须与动作词在 <span class="mono">12 字符</span> 窗口内邻近共现，于是「批量导入」「并行度调高」这类伪信号不再误触发。命中判定导出成函数，能被回归直接断言，而不是只能看 stdout。</p>
+        <p>不再靠「长度够长 + 出现关键词」粗判：意图词必须与动作词在<b>邻近窗口</b>内共现（窗口宽度见 contract.md），于是「批量导入」「并行度调高」这类伪信号不再误触发。命中判定导出成函数，能被回归直接断言，而不是只能看 stdout。</p>
       </div>
       <div class="chg">
         <div class="hd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg><b>一条「平台事实」被自己推翻</b></div>
@@ -396,8 +396,8 @@
   </section>
 
   <section id="roster">
-    <div class="sec-head"><span class="n">07</span><h2>当前在册成员</h2></div>
-    <p class="dim" style="font-size:13.5px;margin-bottom:16px">成员是运行时按任务长出来的，不是预置的 —— 已有专精成员一律复用。归属以 <span class="mono">roster.json</span> 的 <span class="mono">owns</span> 为准，实战记录只作匹配参考。</p>
+    <div class="sec-head"><span class="n">07</span><h2>成员形态与在册示例</h2></div>
+    <p class="dim" style="font-size:13.5px;margin-bottom:16px">成员是运行时按任务长出来的，不是预置的 —— 已有专精成员一律复用。归属以 <span class="mono">roster.json</span> 的 <span class="mono">owns</span> 为准，实战记录只作匹配参考。<b>下面列的是形态示例，实际名单以 <span class="mono">.superagent/roster.json</span> 为准</b>。</p>
     <div class="roster">
       <div class="mem builtin"><div class="nm">explore<span class="kind">builtin</span></div><p>只读定位：找代码、找文件、摸清现状。不写文件。</p></div>
       <div class="mem builtin"><div class="nm">worker<span class="kind">builtin</span></div><p>边界清晰的一次性生产：spec 明确的单点实现。</p></div>
@@ -411,7 +411,7 @@
   </section>
 
   <footer>
-    <span>Super Agent Router v0.5.1 · 描述与思维导图</span>
+    <span>Super Agent Router · 架构说明与思维导图</span>
     <span>数据源：插件包 <span class="mono">C:/Users/yang2/.minimax/plugins/super-agent-router</span> 与项目 <span class="mono">.superagent/</span></span>
   </footer>
 </div>

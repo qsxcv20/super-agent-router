@@ -158,6 +158,17 @@ function makeCodexTranscript(session, parent, agent, scope) {
     ok('D-29 痕迹落在 PLUGIN_DATA 下一层（不多套一层）', directHit,
       'direct=' + fs.existsSync(direct) + ' nested=' + fs.existsSync(nested));
     ok('D-29 不产生多套一层的怪目录', !fs.existsSync(nested), 'nestedExists=' + fs.existsSync(nested));
+
+    // F4（独立验收实测的洞）：PLUGIN_DATA 带**尾斜杠**时也不能多套一层。
+    // 之前的判定是「正则锚末尾」，尾斜杠会打破锚点 -> 又去拼一层。
+    spawnSync('node', [path.join(PLUGIN_ROOT, 'scripts', 'gate.mjs')], {
+      input: '{ this is not json',
+      env: { ...process.env, PLUGIN_ROOT, PLUGIN_DATA: runtimeShape + path.sep, MINIMAX_PROJECT_DIR: tmp },
+      encoding: 'utf8'
+    });
+    const nestedTrailing = path.join(runtimeShape, 'hooks', 'super-agent-router', 'gate-trace.jsonl');
+    ok('D-29/F4 尾斜杠形态也不多套一层', !fs.existsSync(nestedTrailing),
+      'nestedExists=' + fs.existsSync(nestedTrailing));
   }
 }
 

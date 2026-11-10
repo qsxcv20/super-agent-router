@@ -231,8 +231,11 @@ deny 理由要写清：解析失败的具体原因（变体不认识 / 没找到
    所以「自动探测子会话是否还活着」不可行 —— 能自动拿到的只有终止事件，
    而取消场景下没有终止事件。**结论：取消场景由发起方显式释放**，
    入口是 `scripts/release-slot.mjs`：
-   `node scripts/release-slot.mjs '{"dispatch_id":"dsp_xxx","reason":"parent_cancelled"}'`
-   （或按 `parent_session_id` 释放该父会话下全部在飞派工）。
+   `node scripts/release-slot.mjs --dispatch dsp_xxx --reason parent_cancelled`
+   （或 `--parent mvs_xxx` 释放该父会话下全部在飞派工）。
+   **入口必须用开关形式**：PowerShell 的原生参数解析会吃掉 JSON 里的双引号，
+   `node x.mjs '{"id":"a"}'` 在 PS 里实际收到 `{"id:a}`（非法 JSON）——
+   开关不含引号，跨 shell 一致。JSON 形式仍兼容，但不得作为文档里的推荐写法。
    释放只把 `active` 翻成 `aborted`，`done` / `aborted` 的记录一个字节都不动；
    目标不存在或台账读不出来时**必须报错**，不许静默成功 ——
    否则调用方以为名额放掉了，实际还在占着。
@@ -314,3 +317,22 @@ UserPromptSubmit 的粗筛决定「这一轮要不要展开编排流程」。判
 （运行时 PLUGIN_DATA 本身就是本插件的专属目录 `.../plugin-data/hooks/super-agent-router`，
 所以痕迹就在它**下一层**；不要再多拼一层 `hooks/super-agent-router` —— 那是 D-29 修掉的坑），
 **不得**静默退出 —— 静默会让「永远不命中」和「判定为不该命中」在日志里长得一样。
+## S12 主 agent 定位（管理层不做苦力）
+
+SessionStart 注入必须写明**主 agent 的定位**：它是管理层，不是执行层。判据：
+
+| 情形 | 谁做 |
+|---|---|
+| 意图理解、拆解、组队、整合、给用户结论 | **主 agent 自己**（不委派） |
+| 已有专项成员 `owns` 这件事 | **派工**，主 agent 不亲自上手 |
+| 无专精成员但有方法论要求 | 先现场配置成员（方法论文件 → 建成员 → 登记 roster）再派工 |
+| 单点小改（typo / 查 API / 加注释 / 改配置值） | 主 agent 直做 |
+| 独立验收 | 派 `verifier`，worker 自述不算 |
+
+**注入文本里不得出现与「管理层定位」矛盾的表述**：「不预置成员」与「不自己做专项活」是两件事，
+必须分开写 —— 只写前者会被读成「有成员也别派、自己干」。
+
+**成员记忆共享但隔离**：教训、履历、方法论各归各的；派工只注入目标成员自己的历史。
+发现串味（别人的教训进了别人的 brief、两个成员抢同一个 `owns`、有人改了别人的记录）
+按缺陷处理并改归属映射，不得默认放着不管。
+

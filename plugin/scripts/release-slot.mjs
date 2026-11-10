@@ -2,23 +2,24 @@
 //
 // 为什么需要这个入口：
 //   名额回收原本只有三条路 —— 正常结束（SubagentStop）、TTL 兜底（2 小时）、读时自愈。
-//   前三条里没有一条能覆盖「父会话主动取消派工」：
-//     - 取消不会触发 SubagentStop；
-//     - TTL 是 2 小时，期间这条记录一直占着并发名额；
-//     - 读时自愈同样以 TTL 为准。
-//   实测（本轮）：派工被 task_stop 取消后，台账 state 长时间停在 active，
-//   父会话只能靠一次性脚本手工改台账才能把名额拿回来 —— 机制没有自带入口，就是纪律落不了地。
-//
-//   台账条目里**没有子会话 id**，所以「自动探测子会话是否还活着」这条路走不通；
-//   能自动拿到的信号只有终止事件，而取消场景下没有终止事件。
+//   没有一条能覆盖「父会话主动取消派工」：取消不触发 SubagentStop，
+//   TTL 兜底要等满 2 小时，期间这条记录一直占着并发名额（MAX_ACTIVE_DISPATCHES = 6）。
+//   台账条目里**没有子会话 id**，所以「自动探测子会话是否还活着」不可行；
+//   能自动拿到的只有终止事件，而取消场景下没有终止事件。
 //   → 结论：取消场景必须由**发起方显式释放**，入口由本脚本提供。
 //
-// 用法：node scripts/release-slot.mjs <payloadJson>
-//   payload = { dispatch_id?, parent_session_id?, agent?, reason? }
-//     dispatch_id      只释放这一条
-//     parent_session_id 释放该父会话下所有仍在飞的派工
-//     agent            可选，再按成员名收窄
-//     reason           写进 end_reason，默认 parent_cancelled
+// 用法（推荐开关形式 —— 不受 shell 引号规则影响）：
+//   node scripts/release-slot.mjs --dispatch dsp_xxx --reason parent_cancelled
+//   node scripts/release-slot.mjs --parent mvs_xxx
+//   node scripts/release-slot.mjs --data-dir <台账目录> --dispatch dsp_xxx
+//
+// 用法（JSON 形式，兼容旧调用）：
+//   node scripts/release-slot.mjs '{"dispatch_id":"dsp_xxx","reason":"parent_cancelled"}'
+//
+// 为什么给开关形式（独立验收 F2）：
+//   PowerShell 的原生参数解析会吃掉 JSON 里的双引号 ——
+//   node release-slot.mjs '{"dispatch_id":"dsp_x"}' 在 PS 里实际收到
+//   {"dispatch_id:dsp_x"}（非法 JSON）。开关形式不含引号，跨 shell 一致。
 //
 // 硬规矩：
 //   1. 只把 state=active 的记录翻成 aborted；done / aborted 的记录一个字节都不动。
@@ -33,38 +34,50 @@ import { readLedger, writeLedger, markDispatchAborted } from './lib.mjs';
 
 const argv = process.argv.slice(2);
 
-// ── 数据目录解析 ───────────────────────────────────────
-// 顺序：--data-dir > PLUGIN_DATA > MINIMAX_PLUGIN_DATA > 运行时默认布局。
-// 猜出来的路径必须真的存在，不存在就报错 —— 宁可拒绝，不往错的目录写。
-function resolveDataDir() {
-  const i = argv.indexOf('--data-dir');
-  if (i >= 0 && argv[i + 1]) return { dir: argv[i + 1], from: '--data-dir' };
-  if (process.env.PLUGIN_DATA) return { dir: process.env.PLUGIN_DATA, from: 'PLUGIN_DATA' };
-  if (process.env.MINIMAX_PLUGIN_DATA) return { dir: process.env.MINIMAX_PLUGIN_DATA, from: 'MINIMAX_PLUGIN_DATA' };
-  const fallback = path.join(os.homedir(), '.minimax', 'v2', 'plugin-data', 'hooks', 'super-agent-router');
-  if (fs.existsSync(fallback)) return { dir: fallback, from: 'runtime-default' };
-  return { dir: '', from: '' };
-}
-
 function fail(message, extra = {}) {
   process.stdout.write(JSON.stringify({ ok: false, error: message, ...extra }, null, 2) + '\n');
   process.exit(1);
 }
 
+// ── 参数解析 ───────────────────────────────────────────
+// 开关一律「一个 token 一个值」，值本身可以是任意字符串（不需要引号）。
+const FLAGS_WITH_VALUE = ['data-dir', 'dispatch', 'parent', 'agent', 'reason'];
+const parsed = { json: '', dataDir: '', dispatch: '', parent: '', agent: '', reason: '', all: false };
+const rest = [];
+for (let i = 0; i < argv.length; i++) {
+  const a = argv[i];
+  if (!a.startsWith('--')) { rest.push(a); continue; }
+  const name = a.slice(2);
+  if (name === 'all') { parsed.all = true; continue; }
+  if (!FLAGS_WITH_VALUE.includes(name)) {
+    fail('未知参数：' + a + '（可用：--dispatch --parent --agent --reason --data-dir --all）');
+  }
+  const v = argv[i + 1];
+  if (v === undefined) fail('--' + name + ' 缺值');
+  parsed[name === 'data-dir' ? 'dataDir' : name] = v;
+  i++;
+}
+
 let payload = {};
-if (argv[0] && !argv[0].startsWith('--')) {
+if (rest.length) {
   try {
-    payload = JSON.parse(argv[0]);
+    payload = JSON.parse(rest[0]);
   } catch (e) {
-    fail('payload 不是合法 JSON：' + (e && e.message ? e.message : 'parse error'));
+    fail('payload 不是合法 JSON：' + (e && e.message ? e.message : 'parse error') +
+      '。若在 PowerShell 里被引号处理搞坏了，改用开关形式：--dispatch <id>');
   }
-} else {
-  // 没给 payload 时，退化成「只按 --data-dir 释放全部在飞」——
-  // 但这个用法太宽，只允许显式加 --all。
-  if (!argv.includes('--all')) {
-    fail('缺 payload。用法：node scripts/release-slot.mjs 传入一段 JSON，' +
-      '字段取 dispatch_id（单条）或 parent_session_id（该父会话全部在飞派工）。');
-  }
+}
+
+// ── 数据目录解析 ───────────────────────────────────────
+// 顺序：--data-dir > PLUGIN_DATA > MINIMAX_PLUGIN_DATA > 运行时默认布局。
+// 猜出来的路径必须真的存在，不存在就报错 —— 宁可拒绝，不往错的目录写。
+function resolveDataDir() {
+  if (parsed.dataDir) return { dir: parsed.dataDir, from: '--data-dir' };
+  if (process.env.PLUGIN_DATA) return { dir: process.env.PLUGIN_DATA, from: 'PLUGIN_DATA' };
+  if (process.env.MINIMAX_PLUGIN_DATA) return { dir: process.env.MINIMAX_PLUGIN_DATA, from: 'MINIMAX_PLUGIN_DATA' };
+  const fallback = path.join(os.homedir(), '.minimax', 'v2', 'plugin-data', 'hooks', 'super-agent-router');
+  if (fs.existsSync(fallback)) return { dir: fallback, from: 'runtime-default' };
+  return { dir: '', from: '' };
 }
 
 const resolved = resolveDataDir();
@@ -80,13 +93,13 @@ if (!ledger.readable && ledger.error) {
   fail('派工台账读不出来：' + ledger.error);
 }
 
-const reason = String(payload.reason || 'parent_cancelled');
-const dispatchId = String(payload.dispatch_id || '').trim();
-const parentSessionId = String(payload.parent_session_id || '').trim();
-const agent = String(payload.agent || '').trim();
+const reason = String(parsed.reason || payload.reason || 'parent_cancelled');
+const dispatchId = String(parsed.dispatch || payload.dispatch_id || '').trim();
+const parentSessionId = String(parsed.parent || payload.parent_session_id || '').trim();
+const agent = String(parsed.agent || payload.agent || '').trim();
 
-if (!dispatchId && !parentSessionId && !argv.includes('--all')) {
-  fail('没指定释放目标：给 dispatch_id（单条）或 parent_session_id（该父会话的全部在飞派工）。');
+if (!dispatchId && !parentSessionId && !parsed.all) {
+  fail('没指定释放目标：给 --dispatch <id>（单条）或 --parent <session_id>（该父会话的全部在飞派工）。');
 }
 
 const activeBefore = (ledger.dispatches || []).filter((d) => (d.state || 'active') === 'active');

@@ -50,6 +50,18 @@ ok('SessionStart 有输出注入', (ss.stdout||'').includes('super-agent-router'
 ok('SessionStart 说明触发条件', (ss.stdout||'').includes('主动走编排流程'), '');
 ok('SessionStart 提示先读 roster', (ss.stdout||'').includes('roster.json'), '');
 
+// 3b. S12：SessionStart 必须写明主 agent 的管理层定位（不做苦力）
+{
+  const o = ss.stdout || '';
+  ok('S12 写明主 agent 是管理层', o.includes('管理层'), '');
+  ok('S12 写明「有专项成员就派工」', o.includes('有就派工'), '');
+  ok('S12 划清分工边界（实现/批量取证/独立验收不归主 agent）', o.includes('分工边界') && o.includes('独立验收') && o.includes('不归你'), '');
+  ok('S12 写明成员记忆共享但隔离', o.includes('共享但隔离'), '');
+  ok('S12 仍保留单点小改直做', o.includes('单点小改'), '');
+  ok('S12 「不预置成员」与「管理层定位」分开表述（不再互相打架）',
+    o.includes('不预置成员') && o.includes('管理层'), '');
+}
+
 // 4. gate：没有可用专项成员的工作区里，普通提问必须 0 字节（单点小改零噪声）
 const EMPTY_PROJ = fs.mkdtempSync(path.join(os.tmpdir(), 'sar-hooks-empty-'));
 const g = spawnSync('node', [path.join(ROOT, 'scripts', 'gate.mjs')], {

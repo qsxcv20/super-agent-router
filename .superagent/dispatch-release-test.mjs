@@ -205,6 +205,33 @@ const base = (id, over = {}) => Object.assign({
   ok('worker 尝试后台账未被释放', led2.dispatches[0].state === 'active', 'state=' + led2.dispatches[0].state);
 }
 
+// ── 8b. 开关形式（F2）：PowerShell 会吃掉 JSON 里的双引号，
+//        所以文档推荐的写法必须是不含引号的开关形式 ─────────────
+{
+  const dir = seed([base('dsp_a'), base('dsp_b')]);
+  const r = run(dir, ['--dispatch', 'dsp_a']);
+  const led = readLedger(dir);
+  const st = (id) => led.dispatches.find((d) => d.dispatch_id === id).state;
+  ok('开关形式 --dispatch 释放成功', r.code === 0 && r.out.ok === true && st('dsp_a') === 'aborted',
+    'code=' + r.code + ' state=' + st('dsp_a'));
+  ok('开关形式不影响别的在飞记录', st('dsp_b') === 'active', 'state=' + st('dsp_b'));
+}
+{
+  const dir = seed([base('dsp_a1'), base('dsp_a2'), base('dsp_other', { parent_session_id: 'mvs_parent_b' })]);
+  const r = run(dir, ['--parent', 'mvs_parent_a']);
+  const led = readLedger(dir);
+  const st = (id) => led.dispatches.find((d) => d.dispatch_id === id).state;
+  ok('开关形式 --parent 释放同父会话全部', st('dsp_a1') === 'aborted' && st('dsp_a2') === 'aborted' && st('dsp_other') === 'active',
+    'a1=' + st('dsp_a1') + ' a2=' + st('dsp_a2') + ' other=' + st('dsp_other'));
+  ok('开关形式 --parent 释放数量 = 2', (r.out.released || []).length === 2, 'n=' + (r.out.released || []).length);
+}
+{
+  const dir = seed([base('dsp_a')]);
+  const r = run(dir, ['--bogus', 'x']);
+  ok('未知开关报错退出', r.code === 1 && r.out.ok === false, 'code=' + r.code);
+  ok('未知开关不改台账', readLedger(dir).dispatches[0].state === 'active', '');
+}
+
 // ── 9. 台账结构完整（写回不丢字段） ────────────────────
 {
   const dir = seed([base('dsp_a')]);
