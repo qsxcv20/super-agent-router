@@ -11,3 +11,6 @@
 2026-11-10T08:21:27.864Z | tier | sa-mechanism-fix | scoped -> full | by router
 2026-11-10T08:21:27.918Z | tier | sa-gate-integrity | scoped -> full | by router
 2026-11-10T08:21:27.977Z | tier | worker | scoped -> full | by router
+2026-11-10T09:43:10.203Z | scope | dsp_mwagd5eq_vtjkwk | deny req_mwahg3ih_5sifbg | by mvs_9bdda202ae274c909a5b4352fc45a471 | 该专项已交付完毕，此请求作废（留痕里已有该专项的沙箱账核对结论，不需要再读项目变更账）。
+2026-11-10T09:43:10.740Z | scope | dsp_mwahmje8_jquprp | deny req_mwahujqf_hdbnmy | by mvs_9bdda202ae274c909a5b4352fc45a471 | bash 是写通道：批这条等于给安装副本可写权限（worker 可覆盖已部署插件），风险与请求不对等。安装副本一致性由父会话在部署后统一做三副本 sha256 核对；确需读某个具体文件请用 read 工具（父会话已批只读条目 ro: C:\Users\yang2\.minimax\plugins\super-agent-router\scripts\）。
+2026-11-10T10:20:29.528Z | scope | dsp_mwaiymac_wmd8sb | deny req_mwajf06h_m8pzco | by mvs_9bdda202ae274c909a5b4352fc45a471 | release 自洽性探针误触发（命令文本里的正则片段被当成路径），非真实需求

@@ -16,7 +16,7 @@
 //   10. D-24：摘要取样不再按名录顺序截断，靠后的成员可见 + 省略者被披露
 //
 // 每个用例用独立成员，避免用例之间互相污染记录池。
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -33,29 +33,61 @@ fs.mkdirSync(DATA, { recursive: true });
 
 let fail = 0;
 const ok = (l, c, e = '') => { if (!c) fail++; console.log((c ? 'PASS ' : 'FAIL ') + l + (e ? ' :: ' + e : '')); };
+// 成功时返回里没有 errors 字段 —— 断言文案统一走这个助手，
+// 免得「断言本身抛异常」把真正的红绿信息吃掉。
+const errs = (r) => JSON.stringify((r && r.errors) || []);
 
 // ── 派工台账（D-13 的凭据来源） ─────────────────────────────
 // 契约 S7.1：verified_by 必须在台账里有一条 agent==它 且 state=='done' 的记录。
 // 这里造一条已回收的验收派工当凭据；其余用例据此判定真伪。
 function ledgerFile() { return path.join(DATA, 'dispatches.json'); }
 function setLedger(dispatches) {
-  fs.writeFileSync(ledgerFile(), JSON.stringify({ dispatches, bindings: [] }, null, 2), 'utf8');
+  let bindings = [];
+  try { bindings = JSON.parse(fs.readFileSync(ledgerFile(), 'utf8')).bindings || []; } catch {}
+  writeLedgerFull(dispatches, bindings);
 }
 function addDispatch(d) {
   let l = { dispatches: [], bindings: [] };
   try { l = JSON.parse(fs.readFileSync(ledgerFile(), 'utf8')); } catch {}
   if (!Array.isArray(l.dispatches)) l.dispatches = [];
   l.dispatches.push(d);
-  setLedger(l.dispatches);
+  writeLedgerFull(l.dispatches, l.bindings || []);
 }
 setLedger([
   { dispatch_id: 'dsp_v1', parent_session_id: 's1', turn_id: 't1', agent: 'verifier', scope: [], state: 'done', at: Date.now() }
 ]);
 
+// ── 写入者身份夹具（D-49）──────────────────────────────────
+// record-gate 现在也要核对「谁在写」：调用方带 session_id，
+// 闸门拿它去派工台账查这个会话绑定的是谁，再与载荷里的 agent 比对。
+// 这里造两条：
+//   PARENT  = 父会话（Router），可以给本项目任何成员记履历
+//   WORKER  = 绑定成员 sa-chart-plot 的子会话，只能写自己的履历
+const PARENT = 'mvs-parent-record';
+const WORKER = 'sess-record-worker';
+// 注意：setLedger() 会把 bindings 重置为空数组 ——
+// 所以每次改台账都要把 bindings 一起写回去，否则绑定凭空消失。
+function writeLedgerFull(dispatches, bindings) {
+  fs.writeFileSync(ledgerFile(), JSON.stringify({ dispatches, bindings }, null, 2), 'utf8');
+}
+// 父会话身份也要在台账里有据：既要有以它为 parent_session_id 的派工行，
+// 也要有绑定表里 parent_session_id 指向它的行 —— 两条都认（resolveWriter 的口径）。
+const BASE_DISPATCHES = [
+  { dispatch_id: 'dsp_v1', parent_session_id: 's1', turn_id: 't1', agent: 'verifier', scope: [], state: 'done', at: Date.now() },
+  { dispatch_id: 'dsp_p1', parent_session_id: PARENT, turn_id: 'tp1', agent: 'sa-chart-plot', agent_key: 'sa-chart-plot', scope: [], state: 'done', at: Date.now() }
+];
+const BASE_BINDINGS = [
+  { session_id: WORKER, parent_session_id: PARENT, agent: 'sa-chart-plot', agent_key: 'sa-chart-plot', scope: [], at: Date.now() },
+  { session_id: 'sess-other-child', parent_session_id: PARENT, agent: 'sa-other', agent_key: 'sa-other', scope: [], at: Date.now() }
+];
+writeLedgerFull(BASE_DISPATCHES, BASE_BINDINGS);
+
 function gate(payload, opts = {}) {
+  // session_id = 「谁在写」的声明（D-49）：闸门拿它去台账查绑定，不靠载荷自称。
   const env = { ...process.env, MINIMAX_PROJECT_DIR: PROJ, PLUGIN_DATA: DATA };
   if (opts.noLedger) delete env.PLUGIN_DATA;
-  const r = spawnSync('node', [path.join(PLUGIN_ROOT, 'scripts', 'record-gate.mjs'), JSON.stringify(payload)], {
+  const body = { session_id: opts.sessionId || PARENT, ...payload };
+  const r = spawnSync('node', [path.join(PLUGIN_ROOT, 'scripts', 'record-gate.mjs'), JSON.stringify(body)], {
     encoding: 'utf8',
     env
   });
@@ -313,6 +345,161 @@ gate({ ...GOOD, agent: MATCH, task: '趋势对比图', approach: '折线加同�
   ok('D-24 旧口径复算看不见靠后成员（新口径看得见）',
     !oldShown.includes('sa-roster-08') && shown.includes('sa-roster-08'),
     '旧口径:' + oldShown.join(',') + ' | 新口径:' + shown.join(','));
+}
+
+// ── 17. D-49：履历的写入者身份 ───────────────────────────────
+// 履历是 Router 匹配成员时的依据 —— 谁都能往兄弟成员的方法论文件里塞「成果」，
+// 那份文件就成了可伪造的匹配依据。写入目标不再由载荷独断。
+{
+  const r = gate({ ...GOOD, agent: 'sa-victim', task: '冒名写入' }, { sessionId: WORKER });
+  ok('D-49 冒用他人身份写履历被拒',
+    r.ok === false && (r.errors || []).some(e => e.includes('写入者身份不符')),
+    errs(r).slice(0, 200));
+  ok('D-49 受害成员的履历未被写入',
+    !fs.existsSync(path.join(PROJ, '.superagent', 'methods', 'sa-victim.md')), '');
+}
+{
+  const r = gate({ ...GOOD, agent: 'sa-chart-plot', task: '写自己' }, { sessionId: WORKER });
+  ok('D-49 成员写自己的履历放行', r.ok === true, errs(r).slice(0, 200));
+}
+{
+  // 条目里写进写入者，便于事后追责
+  const raw = fs.readFileSync(path.join(PROJ, '.superagent', 'methods', 'sa-chart-plot.md'), 'utf8');
+  ok('D-49 履历条目内记录写入者', raw.includes('- 写入者：') && raw.includes('会话'), JSON.stringify(raw.slice(-160)));
+}
+
+// ── 18. D-51：履历段首定位口径统一 ─────────────────────────
+// 写入端曾用子串 indexOf('## 实战记录')，读取端按行首匹配。
+// 方法论文件正文里只要出现一次字面串，新履历就落进前一个段 —— 写进去却读不出来，
+// 段里的其它「###」还被当成履历条数，20 条上限被提前触顶。
+{
+  const TRICKY = 'sa-locate-tricky';
+  const p2 = path.join(PROJ, '.superagent', 'methods', TRICKY + '.md');
+  fs.writeFileSync(p2, ['# ' + TRICKY, '', '## 归属', '详见 ## 实战记录 段的说明（正文里的字面串）', '',
+    '## 实战记录', '', '### 2026-01-01 · 旧领域 · 旧任务', '- 做法：老做法', '- 证据：老证据', '- 验收：verifier', '',
+    '## 验收清单', '- [ ] 口径已回显', ''].join('\n'), 'utf8');
+  const r = gate({ ...GOOD, agent: TRICKY, task: '定位口径' });
+  ok('D-51 段首定位统一后写入成功', r.ok === true, errs(r).slice(0, 200));
+  const raw = fs.readFileSync(p2, 'utf8');
+  const secStart = raw.indexOf('\n## 实战记录');
+  const secEnd = raw.indexOf('\n## 验收清单');
+  const secBody = raw.slice(secStart, secEnd === -1 ? raw.length : secEnd);
+  ok('D-51 新履历落进真正的实战记录段（不在归属段）',
+    secBody.includes('定位口径') && !raw.slice(0, secStart).includes('定位口径'),
+    JSON.stringify(raw.slice(0, 200)));
+  const cnt = (secBody.match(/^###\s/gm) || []).length;
+  ok('D-51 段内条数正确（1 条存量 + 1 条新增 = 2）', cnt === 2, String(cnt));
+  // 口径敏感点：写入端若用子串 indexOf('## 实战记录')，会命中正文里那处字面串，
+  // 新条目就落进「归属」段 —— 上面的断言正是卡这一条。
+  // 这里再钉一个「段内条数不含归属段里的 ###」的判据：
+  const attrSection = raw.slice(raw.indexOf('\n## 归属'), secStart);
+  ok('D-51 归属段里的 ### 不被算成履历条数',
+    !/^###\s/m.test(attrSection), JSON.stringify(attrSection.slice(0, 120)));
+  // 读取端也要读得到（写进去 ≠ 读得出来，这是 D-51 的要害）
+  const out = spawnSync('node', [path.join(PLUGIN_ROOT, 'scripts', 'records.mjs'), TRICKY], {
+    encoding: 'utf8', env: { ...process.env, MINIMAX_PROJECT_DIR: PROJ }
+  });
+  let parsed = {};
+  try { parsed = JSON.parse(out.stdout); } catch {}
+  ok('D-51 新履历能被读取端读出',
+    Array.isArray(parsed.records) && parsed.records.length === 2 &&
+    parsed.records.some(x => x.title.includes('定位口径')),
+    JSON.stringify(parsed).slice(0, 200));
+}
+
+// ── 19. D-52：并发写同一成员的履历不丢条目 ─────────────────
+// 履历也是读-改-写整体覆盖：并发写会静默丢条目，且每次都返回 ok:true。
+// **必须真并发**：spawnSync 包在 Promise 里仍是串行，那样去掉写锁断言照样绿。
+{
+  // 并发数取 16、且跑 3 轮 —— 旧口径的丢条目是**概率性**的：
+  // 进程启动错峰时，后起的进程读到的快照已经含前几条，就丢不了条目，
+  // 断言会「碰巧绿」（变异检验实测：单轮 8 并发时绿、红各出现过一次）。
+  // 16 个进程 × 3 轮 = 48 次写入机会，任何一轮丢条目即判红；
+  // 每轮用独立成员名与方法论文件，各轮互不干扰计数。
+  // **并发数必须小于履历条数上限（20）**：上限判定在锁内生效，
+  // 并发数一旦追平上限，第 N 个写入必然被「已达上限」拒掉 ——
+  // 那是**正确行为**不是缺陷。改并发数前先看 MAX_RECORDS。
+  const N = 16;
+  const ROUNDS = 3;
+  const run = (agent, i) => new Promise((resolve) => {
+    const child = spawn('node', [path.join(PLUGIN_ROOT, 'scripts', 'record-gate.mjs'),
+      JSON.stringify({ session_id: PARENT, agent, task: '并发' + i, domain: '并发领域',
+        approach: '做法' + i, evidence: '证据' + i, verified_by: 'verifier' })], {
+      encoding: 'utf8',
+      env: { ...process.env, MINIMAX_PROJECT_DIR: PROJ, PLUGIN_DATA: DATA }
+    });
+    let buf = '';
+    child.stdout.on('data', (c) => { buf += c; });
+    child.on('close', () => {
+      let out = {};
+      try { out = JSON.parse(buf); } catch {}
+      resolve(out);
+    });
+  });
+  let allCounted = true;
+  let allPresent = true;
+  let minCnt = Infinity;
+  // 诊断用：把**明确失败**（ok:false）的原因收集起来。
+  // 为什么必须分开看：D-52 的要害是**静默丢失**（返回 ok 却没落盘）。
+  // 如果少的那条是「明确失败」，调用方知道没记上、可以重试 —— 那是「不谎报」，
+  // 与「静默丢」不是一回事。不分开就会把两者混成同一个红。
+  const failures = [];
+  for (let round = 0; round < ROUNDS; round++) {
+    const agent = 'sa-concurrent-records-r' + round;
+    fs.writeFileSync(path.join(PROJ, '.superagent', 'methods', agent + '.md'),
+      '# ' + agent + '\n\n## 实战记录\n\n', 'utf8');
+    const outs = await Promise.all(Array.from({ length: N }, (_, i) => run(agent, i)));
+    for (const o of outs) {
+      if (o.ok !== true) failures.push(JSON.stringify(o.errors || o).slice(0, 200));
+    }
+    const raw = fs.readFileSync(path.join(PROJ, '.superagent', 'methods', agent + '.md'), 'utf8');
+    const cnt = (raw.match(/^###\s/gm) || []).length;
+    if (cnt < minCnt) minCnt = cnt;
+    if (cnt !== N) allCounted = false;
+    if (!Array.from({ length: N }, (_, i) => raw.includes('并发' + i)).every(Boolean)) allPresent = false;
+  }
+  const diag = '最少落盘条数=' + minCnt + ' 明确失败=' + failures.length +
+    (failures.length ? ' 首条失败原因=' + failures[0] : '');
+  ok('D-52 并发写履历不丢条目（' + N + ' 次 × ' + ROUNDS + ' 轮 → 最少 ' + minCnt + ' 条）',
+    allCounted && minCnt === N, diag);
+  ok('D-52 并发写履历逐条都在', allPresent, diag);
+  // 明确失败也要被看见：写入方返回了 ok:false，说明它知道自己没记上 ——
+  // 这是「不谎报」，但它**不是**「写成功」。把失败数报出来，避免「绿」掩盖了它。
+  ok('D-52 并发写履历无明确失败（每一次写入都真的落盘）',
+    failures.length === 0, diag);
+}
+
+// ── 20. D-56 / D-57：取样名额单一常量 + 名录重名去重 ────────
+{
+  const recMod = await import(pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'records.mjs')).href);
+  const rosterMod = await import(pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'roster.mjs')).href);
+  ok('D-56 取样名额是单一常量且与名录上限同源',
+    recMod.SUMMARY_MAX_MEMBERS === rosterMod.MAX_ROSTER,
+    'SUMMARY_MAX_MEMBERS=' + recMod.SUMMARY_MAX_MEMBERS + ' MAX_ROSTER=' + rosterMod.MAX_ROSTER);
+  // CLI 走的默认值必须就是那个常量（否则 CLI 与注入层仍是两个口径）
+  const cli = spawnSync('node', [path.join(PLUGIN_ROOT, 'scripts', 'records.mjs'), 'summary'], {
+    encoding: 'utf8', env: { ...process.env, MINIMAX_PROJECT_DIR: PROJ }
+  });
+  let cliOut = {};
+  try { cliOut = JSON.parse(cli.stdout); } catch {}
+  ok('D-56 CLI 默认口径与常量一致（CLI 与注入层同一结论）',
+    cliOut.maxMembers === recMod.SUMMARY_MAX_MEMBERS,
+    'CLI maxMembers=' + cliOut.maxMembers + ' 常量=' + recMod.SUMMARY_MAX_MEMBERS);
+  // 重名成员：同一成员在摘要里只出现一次，且异常被显式报出
+  const dupRoster = { version: 1, members: [
+    { name: 'sa-dup', kind: 'specialist', source: 'runtime', owns: 'x', accepts: 'a', reject: 'r' },
+    { name: 'sa-dup', kind: 'specialist', source: 'runtime', owns: 'x', accepts: 'a', reject: 'r' },
+    { name: 'sa-solo', kind: 'specialist', source: 'runtime', owns: 'y', accepts: 'a', reject: 'r' }
+  ] };
+  fs.writeFileSync(path.join(PROJ, '.superagent', 'roster.json'), JSON.stringify(dupRoster, null, 2), 'utf8');
+  const detail = recMod.summarizeRecordsDetailed(3, recMod.SUMMARY_MAX_MEMBERS);
+  ok('D-57 摘要里同名成员只出现一次',
+    detail.members.filter(m => m.name === 'sa-dup').length <= 1 &&
+    detail.totalMembers === detail.members.length + detail.omitted.length,
+    JSON.stringify({ total: detail.totalMembers, shown: detail.shownMembers, omitted: detail.omitted }));
+  ok('D-57 重名异常被显式报出（不静默去重）',
+    Array.isArray(detail.duplicateNames) && detail.duplicateNames.includes('sa-dup'),
+    JSON.stringify(detail.duplicateNames));
 }
 
 console.log(fail === 0 ? '>>> RECORDS ALL PASS' : '>>> RECORDS FAILURES: ' + fail);

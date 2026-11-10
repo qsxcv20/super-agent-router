@@ -15,28 +15,39 @@
 //
 // 用法（开关形式，不受 shell 引号规则影响）：
 //   node scripts/scope-amend.mjs --list
-//   node scripts/scope-amend.mjs --grant req_xxx --approver router
-//   node scripts/scope-amend.mjs --deny  req_xxx --approver router --reason "不该读"
-//   node scripts/scope-amend.mjs --dispatch dsp_xxx --add src/app/ --approver router
-//   node scripts/scope-amend.mjs --dispatch dsp_xxx --add src/app.ts --read --approver router
+//   node scripts/scope-amend.mjs --grant req_xxx --approver <父会话 id>
+//   node scripts/scope-amend.mjs --deny  req_xxx --approver <父会话 id> --reason "不该读"
+//   node scripts/scope-amend.mjs --dispatch dsp_xxx --add src/app/ --approver <父会话 id>
+//   node scripts/scope-amend.mjs --dispatch dsp_xxx --add src/app.ts --read --approver <父会话 id>
 //   node scripts/scope-amend.mjs --tiers
-//   node scripts/scope-amend.mjs --tier full  --agent sa-gate-integrity --approver router
-//   node scripts/scope-amend.mjs --tier scoped --agent sa-gate-integrity --approver router
+//   node scripts/scope-amend.mjs --tier full  --agent sa-gate-integrity --approver <父会话 id>
+//   node scripts/scope-amend.mjs --tier scoped --agent sa-gate-integrity --approver <父会话 id>
+//
+// <父会话 id> = 该派工记录里的 parent_session_id（父会话自己的 session id）。
+// --list 的待审清单里会直接给出这个值，照抄即可。
 //
 // 硬规矩：
 //   1. 读请求只授读（ro: 条目），写请求才给可写条目 —— 批准读不等于批准写。
 //   2. 批准必须落在**仍在飞**的派工上；派工已结束则拒绝扩权（事后再补权限没有意义）。
 //   3. 每次批准都记录批准人与时间 —— 扩权必须有据可查。
 //   4. 提权（tier）是**管理员动作**：写在项目级 .superagent/roster.json 里，
-//      并留痕到 .superagent/changes.log。worker 无权改自己的等级
-//      （派工闸门 1c 封掉了 .superagent/ 的写授权）。
+//      并留痕到 .superagent/changes.log。
+//   5. 批准人必须是**真实的父会话 id**：--grant 要等于该派工的 parent_session_id，
+//      --tier 必须是台账里存在过的父会话 id。这是**纵深防御**，不是主防线 ——
+//      worker 的派工原文里就带着 PARENT SESSION:，所以它挡不住蓄意自提权。
+//      主防线在 guard.mjs：权威面脚本（提权 / 批准 / 写履历 / 写错题本 / 登记成员）
+//      是**父会话专属**，worker 执行即被拒。
+//   6. 诚实边界（契约 S13.5）：hook 是护栏不是沙箱 —— worker 若能执行一段落盘的脚本，
+//      脚本内部的写入不受判定约束。机制能做的是：把权威面脚本列为父会话专属（降低误用）、
+//      把提权与批准记进审计留痕；真正的防线是运行时权限 + 审计留痕 + 验收时复核
+//      （references/review.md 的扩权复核清单）。
 
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 import {
   readLedger, writeLedger, grantScopeRequest, denyScopeRequest, READONLY_PREFIX,
-  readRoster, projectRoot, TIER_FULL, TIER_SCOPED
+  readRoster, projectRoot, TIER_FULL, TIER_SCOPED, isPrivateMemoryPath
 } from './lib.mjs';
 
 const argv = process.argv.slice(2);
@@ -84,6 +95,13 @@ if (!ledger.readable && ledger.error) fail('派工台账读不出来：' + ledge
 const requests = Array.isArray(ledger.scope_requests) ? ledger.scope_requests : [];
 
 // ── 列表 ───────────────────────────────────────────────
+//
+// 待审清单里直接给出**父会话 id**：批准时 --approver 要的就是它，
+// 父会话照抄即可，不必去猜自己的 session id。
+function parentOf(dispatchId) {
+  const d = (ledger.dispatches || []).find((x) => x.dispatch_id && x.dispatch_id === dispatchId);
+  return d ? String(d.parent_session_id || '') : '';
+}
 if (parsed.list) {
   const pending = requests.filter((r) => r.state === 'pending');
   const out = {
@@ -93,6 +111,7 @@ if (parsed.list) {
     pending: pending.map((r) => ({
       request_id: r.request_id,
       dispatch_id: r.dispatch_id,
+      parent_session_id: parentOf(r.dispatch_id),
       agent: r.agent,
       tool: r.tool,
       mode: r.mode,
@@ -110,12 +129,54 @@ if (parsed.list) {
 // ── 批准 / 拒绝一条待审请求 ──────────────────────────────
 if (parsed.grant || parsed.deny) {
   const id = String(parsed.grant || parsed.deny || '');
-  const approver = String(parsed.approver || 'router');
+  const approver = String(parsed.approver || '');
+  if (!approver) {
+    fail('--grant / --deny 必须带 --approver <父会话 id>（该派工的 parent_session_id）');
+  }
+  // 批准人校验（**纵深防御**，不是主防线）。
+  //
+  // 以前 --approver 只是命令行上的一个字符串，谁执行都算「管理员」——
+  // 于是 worker 能给自己提权、能自批准自己的越界请求（F1）。
+  // 这里只认**该派工的父会话 id**：自称是管理员的字符串不算数。
+  //
+  // 诚实边界：worker 的派工原文里就带着 PARENT SESSION: ——
+  // 所以这一层挡不住**蓄意**自提权，它挡的是「随手写个名字就过」与台账里凭空出现的批准人。
+  // 主防线在 guard.mjs：权威面脚本是父会话专属，worker 执行即被拒。
+  //
+  // --deny 是收紧方向，判不到派工时放行（清理动作不该被卡住）。
+  const reqRow = (ledger.scope_requests || []).find((r) => r.request_id === id);
+  const dRow = reqRow
+    ? (ledger.dispatches || []).find((d) => d.dispatch_id && d.dispatch_id === reqRow.dispatch_id)
+    : null;
+  if (dRow) {
+    const parent = String(dRow.parent_session_id || '');
+    if (approver !== parent) {
+      fail('批准人 ' + approver + ' 不是该派工的父会话（' + parent + '）—— ' +
+        '批准必须由派工这一侧的父会话执行（--approver ' + parent + '）');
+    }
+  }
   if (parsed.grant) {
+    // 私有记忆目录的扩权 = 造一条**永远不生效**的死条目 → 当场拒（D-58）。
+    // 范围层对私有记忆路径一律不授予（契约 S13.4），批了也不会放行；
+    // 与其让父会话以为「批了就有效」，不如当场说清，并指出契约通道。
+    const reqTargets = (reqRow && Array.isArray(reqRow.targets)) ? reqRow.targets : [];
+    const hitMem = reqTargets.map((t) => String(t || '')).find((t) => isPrivateMemoryPath(t));
+    if (hitMem) {
+      fail('该目标在成员的私有记忆目录下（' + hitMem + '）—— 扩权**不会生效**：' +
+        '范围层对私有记忆路径一律不授予（契约 S13.4），只有「成员自己那份」的精确文件通道例外。' +
+        '需要它的内容，请让 Router 转写进 brief（契约通道），不要走扩权。');
+    }
     const r = grantScopeRequest(ledger, id, approver);
     if (!r.ok) fail(r.error);
     const okWrite = writeLedger(ledger);
     if (!okWrite) fail('批准结果写回台账失败 —— 扩权可能没有生效');
+    // 审计留痕：批准与提权同口径进 .superagent/changes.log（批准人与时间）。
+    // 台账里也有 approved_by / approved_at，但那是**台账**，不是项目的变更账 ——
+    // 验收时查「谁批的」查的是 changes.log。
+    const logged = appendChangeLog(
+      new Date().toISOString() + ' | scope | ' + (r.dispatch_id || '') +
+      ' | grant ' + id + ' | by ' + approver +
+      ' | + ' + (Array.isArray(r.added) ? r.added.join(', ') : ''));
     process.stdout.write(JSON.stringify({
       ok: true,
       granted: id,
@@ -129,6 +190,10 @@ if (parsed.grant || parsed.deny) {
   const r = denyScopeRequest(ledger, id, approver, parsed.reason || '');
   if (!r.ok) fail(r.error);
   if (!writeLedger(ledger)) fail('拒绝结果写回台账失败');
+  appendChangeLog(
+    new Date().toISOString() + ' | scope | ' + (reqRow && reqRow.dispatch_id ? reqRow.dispatch_id : '') +
+    ' | deny ' + id + ' | by ' + approver +
+    ' | ' + (parsed.reason || ''));
   process.stdout.write(JSON.stringify({ ok: true, denied: id, approved_by: approver, reason: parsed.reason || '' }, null, 2) + '\n');
   process.exit(0);
 }
@@ -184,7 +249,19 @@ if (parsed.tier) {
   }
   const agent = String(parsed.agent || '').trim();
   if (!agent) fail('--tier 必须配 --agent <成员名>');
-  const approver = String(parsed.approver || 'router');
+  const approver = String(parsed.approver || '');
+  if (!approver) fail('--tier 必须带 --approver <父会话 id>');
+  // 批准人必须是台账里**存在过的父会话 id**（纵深防御，不是主防线）。
+  // 以前这里是任意字符串 —— 谁执行都算管理员，worker 能给自己提权（F1）。
+  const knownParents = Array.from(new Set(
+    (ledger.dispatches || []).map((d) => String(d.parent_session_id || '')).filter(Boolean)));
+  if (knownParents.indexOf(approver) === -1) {
+    fail('批准人 ' + approver + ' 不是台账里存在过的父会话 id' +
+      (knownParents.length
+        ? '（已知：' + knownParents.slice(0, 5).join(', ') + '）'
+        : '（台账里还没有任何派工记录）') +
+      ' —— 提权是管理员动作，批准人必须是真实的父会话');
+  }
   const rp = rosterPath();
   const r = readRoster(projectRoot());
   if (!r.ok) fail('读不到专项名录：' + r.error);
@@ -228,8 +305,23 @@ if (parsed.dispatch && parsed.add) {
   if ((d.state || 'active') !== 'active') {
     fail('派工 ' + parsed.dispatch + ' 已结束（state=' + d.state + '）—— 事后再补权限没有意义，请重新派工');
   }
-  const approver = String(parsed.approver || 'router');
+  const approver = String(parsed.approver || '');
+  if (!approver) fail('--dispatch --add 必须带 --approver <父会话 id>');
+  // 批准人校验（同 --grant）：必须是该派工的父会话。
+  // 这一条与「批准请求」是同一类动作 —— 直接加条目同样是在扩权，
+  // 以前 --approver 是任意字符串，worker 能给自己加白名单条目（F1）。
+  const parent = String(d.parent_session_id || '');
+  if (approver !== parent) {
+    fail('批准人 ' + approver + ' 不是该派工的父会话（' + parent + '）—— ' +
+      '扩权必须由派工这一侧的父会话执行（--approver ' + parent + '）');
+  }
   const entry = parsed.read ? (READONLY_PREFIX + ' ' + parsed.add) : String(parsed.add);
+  // 同上：私有记忆目录的条目不造死条目（D-58）
+  if (isPrivateMemoryPath(String(parsed.add))) {
+    fail('该路径在成员的私有记忆目录下（' + String(parsed.add) + '）—— 扩权**不会生效**：' +
+      '范围层对私有记忆路径一律不授予（契约 S13.4），只有「成员自己那份」的精确文件通道例外。' +
+      '需要它的内容，请让 Router 转写进 brief（契约通道），不要走扩权。');
+  }
   if (!Array.isArray(d.scope)) d.scope = [];
   if (!Array.isArray(d.scope_amended)) d.scope_amended = [];
   const added = [];
@@ -242,6 +334,9 @@ if (parsed.dispatch && parsed.add) {
     }
   }
   if (!writeLedger(ledger)) fail('扩权写回台账失败');
+  appendChangeLog(
+    new Date().toISOString() + ' | scope | ' + d.dispatch_id +
+    ' | add-entry | by ' + approver + ' | + ' + added.join(', '));
   process.stdout.write(JSON.stringify({
     ok: true,
     dispatch_id: d.dispatch_id,

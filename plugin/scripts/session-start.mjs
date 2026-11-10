@@ -11,7 +11,7 @@
 // 注入内容必须短。只放「什么时候该编排 + 怎么开始」，
 // 详细的协议放在 skill 里，让模型按需加载。
 import { readStdin, parseInput, readRoster, TIER_FULL } from './lib.mjs';
-import { summarizeRecordsDetailed } from './records.mjs';
+import { summarizeRecordsDetailed, SUMMARY_MAX_MEMBERS } from './records.mjs';
 import { readRouterLessons } from './lessons.mjs';
 
 const input = parseInput(readStdin());
@@ -50,8 +50,10 @@ lines.push('- full：项目工作区内自由读写，不必逐路径枚举；�
 lines.push('**每个成员都是平等的** —— 任何成员都可以被提权，不是某些成员的特权；');
 lines.push('但提权这个动作在管理员（你）手里：');
 lines.push('node scripts/scope-amend.mjs --tiers');
-lines.push('node scripts/scope-amend.mjs --tier full --agent <成员名> --approver router');
-lines.push('提权写进 roster.json 并留痕 .superagent/changes.log；worker 无权改自己的等级。');
+lines.push('node scripts/scope-amend.mjs --tier full --agent <成员名> --approver <本次派工的父会话 id = 你自己的会话 id>');
+lines.push('（批准人必须是**真实会话 id**，不能写「router」这种自称；`node scripts/scope-amend.mjs --list` 的待审清单里直接给出该 id）');
+lines.push('提权写进 roster.json 并留痕 .superagent/changes.log；派工期间提权对**已在飞的会话不生效**（等级按派工时快照）。');
+lines.push('诚实边界：护栏是护栏不是沙箱 —— worker 若能执行一段落盘的脚本，脚本内部的写入不受判定约束；靠审计留痕与验收时复核兜底，别把「拦得住」写成「绝对不可能」。');
 lines.push('');
 lines.push('默认成员数 = 0（不预置成员，用时现场配置）。改 typo、查 API、单点小改一律直做，不要为了用编排而用编排。');
 lines.push('（UserPromptSubmit 的粗筛可能漏判。若你判断这轮该走编排流程，直接读本 skill 的协议，不要等注入提醒。）');
@@ -88,7 +90,7 @@ if (fullMembers.length) {
 // 实战记录摘要：让模型一开始就知道谁做成过什么
 // 名额口径与 records.mjs 默认值统一，并取 maxMembers >= MAX_ROSTER(12)（契约 S7.3 / D-24）。
 // 排序口径直接沿用 records.mjs 的取样结果，不另起一套。
-const summary = summarizeRecordsDetailed(3, 12);
+const summary = summarizeRecordsDetailed(3, SUMMARY_MAX_MEMBERS);
 const summaries = summary.members;
 if (summaries.length) {
   lines.push('');

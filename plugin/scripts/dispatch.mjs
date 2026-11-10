@@ -15,9 +15,10 @@ import {
   bumpDispatchCounter, scopeClash, workspaceRoot, projectRoot,
   MAX_ACTIVE_DISPATCHES, MAX_TOTAL_DISPATCHES,
   resolveAgentKey, extractBriefMarkers, reapExpiredDispatches, normScopeEntry,
-  touchesSuperagentPath
+  touchesSuperagentPath, memberTier, TIER_FULL, TIER_SCOPED,
+  isPrivateMemoryEntry, PRIVATE_MEMORY_DIRS
 } from './lib.mjs';
-import { readLessons, countEntries, readRecords } from './lessons.mjs';
+import { readLessons, countEntries, readRecords, lessonsStatusLine } from './lessons.mjs';
 
 const rawStdin = readStdin();
 const parsed = parseInputStrict(rawStdin);
@@ -92,12 +93,13 @@ if (scopeDetail.rejected.length) {
 // 而这些权限**本来就不需要写进 SCOPE**：guard 对被派工成员自己的方法论与错题本
 // 按**精确文件**单独放行（guard.mjs 的 exactPaths），与 SCOPE 无关。
 // 所以把整个目录写进 SCOPE 只有一个效果：越权授予他人记忆。
-const PRIVATE_MEMORY_DIRS = ['.superagent/lessons', '.superagent/methods'];
+// 判据用 lib.mjs 的共享函数（isPrivateMemoryEntry）——
+// 与护栏第二道防线、范围层同一口径，免得两处各判各的、慢慢长歪（D-58）。
 for (const raw of scope) {
+  if (!isPrivateMemoryEntry(raw)) continue;
   const p2 = normScopeEntry(raw);
-  if (!p2) continue;
-  const hit = PRIVATE_MEMORY_DIRS.find((m) => p2.path === m || p2.path.startsWith(m + '/'));
-  if (hit) {
+  const hit = PRIVATE_MEMORY_DIRS.find((m) => p2 && (p2.path === m || p2.path.startsWith(m + '/'))) || '私有记忆目录';
+  {
     deny('[super-agent-router] 派工的 SCOPE 覆盖了成员的私有记忆目录（' + hit + '/）—— 拒绝派发。' +
       '该目录装的是每个成员自己的错题本与方法论。读模式按目录树放宽，' +
       '而文件条目的读范围是它**所在的目录** —— 所以哪怕只写某个成员的文件，' +
@@ -197,6 +199,14 @@ const agentKey = resolveAgentKey({
   promptAgent,
   toolAgentName: agent
 });
+// 派工那一刻的**权限等级快照**（F1-4）。
+//
+// 为什么快照：worker 操作的等级 = 派工时的等级。
+// 以前 guard 每次工具调用都重读 roster.json —— worker 若能在会话中途改自己的等级
+//（绕过 admin CLI 的那条路），后面每一次判定都按新等级走，一次提权就长期有效。
+// 快照让「会话中途自提权」对**当前会话**无效：下一个派工才按新等级生效。
+const tierSnap = memberTier(agentKey) === TIER_FULL ? TIER_FULL : TIER_SCOPED;
+
 const lessons = agentKey ? readLessons(agentKey) : (agent ? readLessons(agent) : []);
 const lessonCount = agentKey ? countEntries(agentKey) : (agent ? countEntries(agent) : 0);
 
@@ -226,6 +236,7 @@ if (existing) {
   existing.tool_use_id = toolUseId;
   existing.lessons = lessons;
   existing.lesson_count = lessonCount;
+  existing.tier = tierSnap;
   existing.at = now;
   dispatchId = existing.dispatch_id;
 } else {
@@ -242,6 +253,7 @@ if (existing) {
     scope,
     lessons,
     lesson_count: lessonCount,
+    tier: tierSnap,
     state: 'active',
     at: now
   });
@@ -261,8 +273,9 @@ if (lessons.length) {
   lessons.forEach((r, i) => l2.push((i + 1) + '. ' + r));
   blocks.push(l2.join('\n'));
 } else {
-  blocks.push('[super-agent-router] ' + (agentKey || agent) + ' 的历史教训：0 条' +
-    '（该成员暂无错题本 —— 是「还没栽过跟头」，不是传递故障）。');
+  // 三态（无错题本 / 文件已建但无条目 / 有条目却抽不出规则）由 lessons.mjs 统一出口。
+  // 注入层别自己拼文案 —— 否则「内容在但抽不出」会被谎报成「还没栽过跟头」（D-50）。
+  blocks.push(lessonsStatusLine(agentKey || agent));
 }
 if (records.length) {
   const l2 = ['[super-agent-router] ' + (agentKey || agent) + ' 的实战记录（该成员此前验收通过的成果，可作方法参考）：'];

@@ -10,7 +10,7 @@
 - Worker 声称做完却拿不出证据 → 交付被拦一次，要求补证据。
 - Worker 的边界算不出来 → **拒绝**，不是放行。
 
-当前版本：**v0.5.2**。
+当前版本：**v0.5.5**。
 
 ## 装在哪
 
@@ -280,47 +280,122 @@ SCOPE: ro: plugin/scripts/, docs/audit/report.md
 
 ```powershell
 node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\scope-amend.mjs" --tiers
-node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\scope-amend.mjs" --tier full --agent sa-gate-integrity --approver router
+node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\scope-amend.mjs" --tier full --agent sa-gate-integrity --approver <父会话 id>
 ```
+
+**`<父会话 id>` 填什么**：填**你这一侧的父会话 id**（你自己的 session id，形如 `mvs_xxx`），
+**不能写「router」「管理员」这种自称** —— 机制只认台账里真实存在过的父会话 id，
+写个自称会被直接拒掉（报错里会列出已知的父会话 id）。
+`--tiers` 看当前所有成员的等级。
 
 提权写进 `.superagent/roster.json`，留痕 `.superagent/changes.log`。
 收回就是把 `full` 换回 `scoped`（同一条命令，改一个词）。
 
-**`full` 不等于无限权限**，这三条照旧生效：
+**`full` 不等于无限权限**，这四条照旧生效：
 
 1. `.superagent/` 编排层私有状态目录除外 —— 那是成员互相篡位、自己给自己提权的战场；
 2. 工作区之外的路径仍然拦，并自动记账待审；
-3. 账号级 / 对外不可逆动作（删成员、改成员、部署、发布）照旧硬拦。
+3. 账号级 / 对外不可逆动作（删成员、改成员、部署、发布）照旧硬拦；
+4. **写冲突检测仍按声明的 SCOPE 比对** —— `full` 放开的是「白名单外的项目内路径」，
+   不是「冲突检测」；所以 `full` 成员的 SCOPE 仍要写清楚它实际要动的范围。
+
+**诚实边界**：提权并不是「worker 绝对改不了自己的等级」—— 机制做的是
+把**权威面脚本**（提权 / 批准扩权 / 写履历 / 写错题本 / 登记成员）列为父会话专属，
+子代理执行它们会被护栏直接拒绝（这是主防线）；admin CLI 还要求**批准人是真实的父会话 id**
+（纵深防御）；提权与批准全部留痕。
+但 hook 是护栏不是沙箱 —— 完整的诚实边界见下面的「诚实边界：护栏是护栏，不是沙箱」一节。
+
+**等级按派工时快照**：派工那一刻把成员的 tier 写进派工记录，子会话绑定继承这份快照 ——
+会话中途的等级变更对**已在飞**的会话不生效（下一个派工才按新等级生效）。
 
 ## 子代理撞墙了怎么办：自动审核，一键批准
 
 子代理撞到 scope 墙时，护栏**自动**把「它想访问什么、被拒了什么」记进台账 ——
-不用等 worker 汇报。父会话一条命令看待审清单：
+不用等 worker 汇报。整个流程是**三步**，自动的是前两步，批准永远是人工的：
+
+| 步 | 谁做 | 发生什么 |
+|---|---|---|
+| 1. 发现 + 记账 | **自动** | 撞墙当场写进台账 `scope_requests[]`，同目标重复撞墙只记一条（`hits` 累加） |
+| 2. 审核 | **父会话** | 一条命令看待审清单，逐条决定批 / 拒 |
+| 3. 批准 | **父会话** | 批准后目标并入该派工的 scope，同步派工记录与子会话绑定，worker 下一次访问即生效 |
+
+### 第 1 步：看待审清单
 
 ```powershell
 node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\scope-amend.mjs" --list
 ```
 
-批准一条（读请求只授读，写仍然拦）：
+清单里每条都直接给出 `parent_session_id` —— 那是批准时要填的值，照抄即可。
+
+### 第 2 步：批准一条（读请求只授读，写仍然拦）
 
 ```powershell
-node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\scope-amend.mjs" --grant req_xxx --approver router
+node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\scope-amend.mjs" --grant req_xxx --approver <父会话 id>
 ```
+
+`<父会话 id>` = 该派工记录里的 `parent_session_id`（父会话自己的 session id），
+**不是「router」这种自称** —— 机制只认台账里真实存在过的父会话 id，自称会被直接拒掉。
 
 拒绝一条：
 
 ```powershell
-node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\scope-amend.mjs" --deny req_xxx --approver router --reason "不该读"
+node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\scope-amend.mjs" --deny req_xxx --approver <父会话 id> --reason "不该读"
 ```
 
-直接给某个仍在飞的派工加条目：
+直接给某个仍在飞的派工加条目（不走待审清单的那条路）：
 
 ```powershell
-node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\scope-amend.mjs" --dispatch dsp_xxx --add src/app/ --approver router
+node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\scope-amend.mjs" --dispatch dsp_xxx --add src/app/ --approver <父会话 id>
 ```
 
-批准**必须**落在仍在飞的派工上 —— 派工结束了就拒绝扩权（事后再补权限没有意义，重新派工即可）。
+### 三条批准口径
+
+1. **批准必须落在仍在飞的派工上** —— 派工结束了就拒绝扩权（事后再补权限没有意义，重新派工即可）。
+   两条扩权路径（`--grant` 与 `--dispatch --add`）**同口径**，都会查派工状态。
+2. **批准读 ≠ 批准写** —— 读请求只加 `ro:` 条目，写同一路径仍然被拦。
+3. **私有记忆目录的扩权会被当场拒绝** —— `.superagent/lessons/`、`.superagent/methods/`
+   下的路径即使被批准也**不会生效**（范围层一律不授予），所以机制直接拒掉并提示正确路径：
+   需要那段内容，请让 Router 转写进 brief。
+
 自动的是**发现与记账**，批准权始终在管理员手里：让被约束者自己决定边界等于拆掉授权模型。
+
+批准人校验是**纵深防御**，不是主防线：worker 的派工原文里就带着 `PARENT SESSION:`，
+所以它挡不住蓄意自提权；主防线是「权威面脚本父会话专属」。
+
+## 诚实边界：护栏是护栏，不是沙箱
+
+这一节请认真读 —— 它决定了你该怎么看待这个插件拦下来的每一次拒绝。
+
+**机制做到的**：
+
+- 派工没写可判定的 SCOPE → **拒绝派工**，不猜、不放行；
+- worker 的工具调用越过 SCOPE → **当场拒绝**，并自动记账进待审清单；
+- 越界被拒的路径若在私有状态目录里 → 诊断文案**不误导**，也不会给一条永远不会生效的批准提示；
+- 权威面脚本（提权 / 批准扩权 / 写履历 / 写错题本 / 登记成员）→ **子代理执行即拒**；
+- 扩权与提权的批准人 → 必须是**真实的父会话 id**，且必须落在**仍在飞**的派工上；
+- 提权与批准 → 全部进 `.superagent/changes.log` 留痕，可审计。
+
+**机制做不到的**（这一段是重点）：
+
+- **hook 是护栏，不是沙箱。** worker 若能执行一段**落盘的脚本**，
+  那段脚本**内部**的写入不受判定约束 —— 护栏拦的是「这次工具调用要碰哪个路径」，
+  看不见脚本内部又写了什么。
+- **权威面脚本父会话专属只降低误用，不是绝对禁止。** 把脚本复制一份、改个名字再执行，
+  或用内联代码直接写文件，都不在判定范围内。
+- **批准人校验挡不住蓄意自提权。** worker 的派工原文里就带着 `PARENT SESSION:`，
+  知道父会话 id 就能填对 —— 这一层拦的是「随手写个名字就过」。
+- **`full` 等级不是无限权限**：工作区外、私有状态目录、账号级不可逆动作照旧拦，
+  且 `full` 放开的是「白名单外的项目内路径」，**不放开写冲突检测**。
+
+**所以真正的防线是这三条**，而不是「脚本层绝对拦得住」：
+
+1. **运行时权限** —— 操作系统与账号层面的权限，是最后一道；
+2. **审计留痕** —— `.superagent/changes.log` 与派工台账记下每一次提权与批准；
+   验收时**逐条复核**，而不是相信「机制拦住了」；
+3. **独立验收** —— `references/review.md` 的扩权复核清单，对扩权结果做人工确认。
+
+一句话：**别把这套机制当成沙箱来用，要当成「可审计的护栏」来用。**
+它的价值在于让越界**看得见、留得痕、可复核**，而不是声称越界不可能发生。
 
 ## brief 是 worker 唯一的协议载体
 
@@ -378,12 +453,15 @@ node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\scope-amend.m
 | **复合** `run_code` | 只判危险操作（代码里夹带的 `mavis agent delete` / `website_deploy` 等一律拦）；不扫代码文本里的路径，作用域交回内层调用：每个内层写/读调用各自触发 PreToolUse 重新判定 |
 | **危险** `mavis_agent_delete` `mavis_agent_update` `website_deploy` `miniapp` / `miniapp_publish`，以及 `mavis` 的 `agent delete` / `agent update`、`miniapp` 的 `publish` | 子代理会话里一律拦：账号级或对外可见的不可逆动作，必须由你亲自发起。Router 父会话（你本人）不受此拦 |
 
-三条硬边界：
+四条硬边界：
 
 1. **只约束被派工的子代理。** Router 父会话不受 worker scope 约束。
 2. **worker 自述完成不算完成。** 派工后必须由独立 verifier 验收。
 3. **账号级与对外不可逆操作不由 worker 执行。** 删成员、改成员配置、部署上线、发布 Mini App ——
    这些交回给你亲自发起。
+4. **权威面脚本父会话专属。** 提权 / 批准扩权 / 写履历 / 写错题本 / 登记成员这几个脚本，
+   子代理执行会被护栏直接拒绝 —— 提权与批准的批准人还必须是真实的父会话 id。
+   （这一条的**边界**见上面「诚实边界：护栏是护栏，不是沙箱」。）
 
 ## 什么时候它会主动接管（触发语义）
 

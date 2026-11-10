@@ -32,18 +32,35 @@
 
 import { pathToFileURL } from 'node:url';
 import { readRecords } from './lessons.mjs';
-import { rosterPath, readRoster, listMembers, MAX_ROSTER } from './roster.mjs';
+import { rosterPath, readRoster, listMembers, duplicateNames, MAX_ROSTER } from './roster.mjs';
 
 // 名录的读法只有一份 —— roster.mjs 是唯一出处。
 // 这里原样再导出，是为了让按 rosterPath / readRoster 引用本模块的老调用方不受影响。
 export { rosterPath, readRoster };
+
+// ── 取样名额（单一事实源） ─────────────────────────────────
+//
+// D-56：CLI 默认 8、注入层（session-start / gate）传 12 —— 同一份数据两个结论。
+// 验收看 CLI、运行时看注入，两边互相矛盾，没法判断谁对。
+//
+// 现在只有一个常量：SUMMARY_MAX_MEMBERS。
+// 为什么与 MAX_ROSTER 绑定：名录上限 12 意味着「有记录的成员」最多 12 个 ——
+// 名额取 12 时，名录里**不可能**有成员被名额挤掉（D-24 的结构性不可见彻底消失）。
+// 取小于 12 的值则必然有省略者 —— 所以披露字段（omitted/truncated）必须留着。
+//
+// 两处取同一个值：
+//   - CLI（records.mjs summary）走 summarizeRecordsDetailed() 的默认参数；
+//   - 注入层（session-start.mjs / gate.mjs）显式传 SUMMARY_MAX_MEMBERS。
+// 注意：注入层那两个调用点在本文件之外（属机制 owner），
+// 那边改成引用本常量后，两处口径才真正同源 —— 见报告「需要父会话补的部分」。
+export const SUMMARY_MAX_MEMBERS = MAX_ROSTER;
 
 // 每个成员最多带 N 条最近的记录，避免注入膨胀。
 //
 // 返回值里除 members 外还带披露字段（totalMembers / shownMembers / omitted /
 // truncated / rosterCap），让调用方能如实写「已显示 N / 共 M」，
 // 而不是让注入文本读起来像全集。
-export function summarizeRecordsDetailed(maxPerMember = 3, maxMembers = 8) {
+export function summarizeRecordsDetailed(maxPerMember = 3, maxMembers = SUMMARY_MAX_MEMBERS) {
   const roster = readRoster();
   const withRecords = [];
   // 第 1 步：把有记录的成员全部收齐 —— 这里**不能**提前 break（D-24 的成因）
@@ -73,13 +90,16 @@ export function summarizeRecordsDetailed(maxPerMember = 3, maxMembers = 8) {
     maxPerMember,
     maxMembers,
     // 名录上限：maxMembers >= rosterCap 时，不可能有成员被名额挤掉
-    rosterCap: MAX_ROSTER
+    rosterCap: MAX_ROSTER,
+    // 名录里的重名成员（D-57）：已按名去重，这里显式报出异常 ——
+    // 静默去重会让「名录里有两个同名成员」从此无人知晓。
+    duplicateNames: duplicateNames(roster)
   };
 }
 
 // 向后兼容：老调用方（gate.mjs / session-start.mjs / dispatch.mjs）只要一个数组。
 // 需要披露信息的调用方请用 summarizeRecordsDetailed()。
-export function summarizeRecords(maxPerMember = 3, maxMembers = 8) {
+export function summarizeRecords(maxPerMember = 3, maxMembers = SUMMARY_MAX_MEMBERS) {
   return summarizeRecordsDetailed(maxPerMember, maxMembers).members;
 }
 

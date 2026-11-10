@@ -131,5 +131,45 @@ fs.writeFileSync(path.join(PROJ, '.superagent', 'methods', 'sa-spreadsheet-extra
   ok('listMembers 返回名字升序', members.map(m => m.name).join(',') === 'sa-a,sa-b', members.map(m => m.name).join(','));
 }
 
+// ── 12. D-57：名录重名不去重 ────────────────────────────────
+// roster.json 里出现同名成员（手改文件绕过 register 的重名拒绝）时，
+// 同一成员在摘要里出现两次：既重复计数，又白占一个名额，被挤掉的其他人少一个可见位置。
+// 口径：同名取一条（并把重名显式报出来，不静默去重）。
+{
+  const dup = { members: [
+    { name: 'sa-dup', kind: 'specialist', source: 'runtime', owns: 'a', accepts: 'x', reject: 'y' },
+    { name: 'sa-dup', kind: 'specialist', source: 'runtime', owns: 'b', accepts: 'x', reject: 'y' },
+    { name: 'sa-solo', kind: 'specialist', source: 'runtime', owns: 'c', accepts: 'x', reject: 'y' }
+  ] };
+  const mod = await import(pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'roster.mjs')).href);
+  const deduped = mod.listMembers(dup);
+  ok('D-57 同名成员只保留一条',
+    deduped.length === 2 && deduped.filter(m => m.name === 'sa-dup').length === 1,
+    JSON.stringify(deduped.map(m => m.name)));
+  ok('D-57 重名被显式报出（可查，不静默去重）',
+    JSON.stringify(mod.duplicateNames(dup)) === JSON.stringify(['sa-dup']),
+    JSON.stringify(mod.duplicateNames(dup)));
+  ok('D-57 去重后仍按名字升序',
+    deduped.map(m => m.name).join(',') === 'sa-dup,sa-solo',
+    deduped.map(m => m.name).join(','));
+}
+{
+  // 落盘的真实名录也要能报出重名（不是只在内存对象里判）
+  fs.writeFileSync(path.join(PROJ, '.superagent', 'roster.json'), JSON.stringify({
+    version: 1, updated: '2026-11-10',
+    members: [
+      { name: 'sa-dup', kind: 'specialist', source: 'runtime', owns: 'a', accepts: 'x', reject: 'y' },
+      { name: 'sa-dup', kind: 'specialist', source: 'runtime', owns: 'b', accepts: 'x', reject: 'y' }
+    ]
+  }, null, 2), 'utf8');
+  const r = roster(['list']);
+  ok('D-57 list 命令报出重名成员',
+    Array.isArray(r.duplicateNames) && r.duplicateNames.includes('sa-dup'),
+    JSON.stringify(r.duplicateNames));
+  ok('D-57 list 里同名成员只出现一次',
+    (r.members || []).filter(m => m.name === 'sa-dup').length === 1,
+    JSON.stringify((r.members || []).map(m => m.name)));
+}
+
 console.log(fail === 0 ? '>>> ROSTER ALL PASS' : '>>> ROSTER FAILURES: ' + fail);
 process.exit(fail ? 1 : 0);

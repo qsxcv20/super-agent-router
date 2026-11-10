@@ -69,12 +69,19 @@ export function readLedger() {
     if (!parsed.counters || typeof parsed.counters !== 'object') parsed.counters = {};
     if (!Array.isArray(parsed.scope_requests)) parsed.scope_requests = [];
     // 迁移：旧版台账记的是「发起方会话」，语义与新版不一致。
-    // 旧记录一律落到 done —— 否则一次历史派工会把会话永久锁死。
+    //
+    // 状态只在**没写**的时候补 —— 补成 done 是为了不把一次历史派工永久锁在在飞名单里。
+    //
+    // 但**已经写着 active 的行必须保持 active**（RG-03）：
+    // 以前这里无条件写 state='done'，于是一条 state='active' 的旧行被**提升成 done** ——
+    // 等于替一个还没结束的派工伪造「已完成」，record-gate 的履历真实性判据
+    // （台账里存在一条 state='done' 的派工记录）就被绕过去了。
+    // 迁移只补缺失的字段，不改写已声明的状态。
     for (const d of parsed.dispatches) {
       if (!d.parent_session_id) {
         d.parent_session_id = String(d.session_id || '');
-        d.state = 'done';
         d.legacy = true;
+        if (!d.state) d.state = 'done';
       }
       if (!d.state) d.state = 'active';
     }
@@ -375,6 +382,37 @@ export function extractScope(text) {
   return extractScopeDetail(text).entries;
 }
 
+// ── 私有记忆目录（成员自己的错题本与方法论）──────────────
+//
+// 这两个目录装的是**成员私有**的记忆：兄弟成员的错题本、方法论。
+//
+// 四层防线，各管各的 —— 别让下一个人又踩两层的差：
+//   · **派工闸门 1b**（dispatch.mjs）：SCOPE 里出现这两个目录下的**任何**条目 → 拒派。
+//     声明路径不给 —— 成员私有记忆不是共享资产。
+//   · **护栏第二道防线**（guard.mjs）：边界里出现这两个目录下的**目录条目** → 拒绝建立边界。
+//     只有目录条目会按读模式展开成整棵子树（放开兄弟成员的错题本全文）；
+//     **精确文件条目**不展开，不触发这道防线 —— 它能不能读由**范围层**判。
+//   · **范围层**（inScope）：私有记忆路径**一律不授予**（mode='exact' 的精确文件通道除外）。
+//   · **扩权入口**（scope-amend.mjs）：给私有记忆目录扩权 = 造一条永远不生效的死条目 → 直接拒。
+export const PRIVATE_MEMORY_DIRS = ['.superagent/lessons', '.superagent/methods'];
+
+// scope 条目的路径是否落在私有记忆目录下（不分形态）。
+// 用路径判定而不是「相对前缀」：绝对路径写法同样要认出来。
+export function isPrivateMemoryEntry(entry) {
+  const p = normScopeEntry(entry);
+  if (!p) return false;
+  return isPrivateMemoryPath(p.path);
+}
+
+// scope 条目**会不会把私有记忆目录展开成整棵子树** —— 只有目录形态会。
+// 护栏第二道防线只认这一种形态（D-58）：
+// 精确文件条目不展开，把整个边界判死会让那个 worker 的**每一次**工具调用都被拒。
+export function expandsPrivateMemoryTree(entry) {
+  const p = normScopeEntry(entry);
+  if (!p || !p.isDir) return false;
+  return isPrivateMemoryPath(p.path);
+}
+
 // ── scope 重叠判定（组队层）─────────────────────────────
 // 只有「写冲突」才算重叠：两个 worker 同时写同一处会互相覆盖。
 // 读范围天然重叠（都要读邻近文件），不算冲突。
@@ -649,6 +687,17 @@ export function grantScopeRequest(ledger, requestId, approver) {
   const d = (ledger.dispatches || []).find((x) => x.dispatch_id && x.dispatch_id === req.dispatch_id);
   if (!d) {
     return { ok: false, error: '台账里找不到对应的派工 ' + (req.dispatch_id || '(空)') + ' —— 可能已结束' };
+  }
+  // 批准必须落在**仍在飞**的派工上（契约 S13.2 第 2 条）。
+  //
+  // 以前这条只在 scope-amend 的「直接加条目」分支有，「批准请求」路径没有 ——
+  // 两条路径口径不一致，于是对**已结束**（done/aborted）的派工照样批准成功，
+  // 台账上留下对死派工的授权记录。错误文案与「直接加条目」分支保持同一口径。
+  if ((d.state || 'active') !== 'active') {
+    return {
+      ok: false,
+      error: '派工 ' + d.dispatch_id + ' 已结束（state=' + d.state + '）—— 事后再补权限没有意义，请重新派工'
+    };
   }
   const added = [];
   if (!Array.isArray(d.scope)) d.scope = [];

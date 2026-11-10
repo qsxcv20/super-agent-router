@@ -789,6 +789,98 @@ ok('glob 显式 path 在读放行目录树内放行', w('glob', { pattern: '**/*
   ok('空载荷时不误拦（没有判定可做）', (r.stdout || '').trim() === '', (r.stdout || '').slice(0, 120));
 }
 
+// ── F1：权威面脚本是父会话专属 ───────────────────────────
+//
+// 缺陷（独立验收 v054 §4.4）：worker 的 SCOPE 覆盖插件脚本目录时，
+// 可以在 bash 里直接跑 admin CLI（提权 / 批准扩权那一支）——
+// 给自己提权到 full，或自批准自己的越界请求。
+//
+// 根因：这些脚本内部自己写文件，护栏对「脚本内部的写入」没有判定能力
+//（契约 S13.5：hook 是护栏不是沙箱）。所以能拦的判定点只有「谁在执行它」。
+//
+// 三条断言必须能区分改前改后：
+//   ① 子代理上下文执行权威面脚本 → deny（文案里出现「权威面脚本」）
+//   ② 父会话执行同一脚本 → 不被这条规则拦（父会话载荷没有 agent_type）
+//   ③ 工作区里的同名副本 → 不被这条规则误拦（匹配按插件根下的具体文件，不按脚本名）
+{
+  const AMEND = path.resolve(PLUGIN_ROOT, 'scripts', 'scope-amend.mjs');
+  const W6 = 'worker-authority';
+  const TR6 = makeTranscript(W6, 'router-authority', 'worker', 'src/app/login.ts');
+  const cmd = 'node "' + AMEND + '" --tier full --agent worker --approver worker';
+  const out1 = guard({
+    hook_event_name: 'PreToolUse', tool_name: 'bash', session_id: W6,
+    agent_id: W6, agent_type: 'worker', transcript_path: TR6,
+    tool_input: { command: cmd }
+  });
+  ok('① 子代理执行权威面脚本被拒（父会话专属）',
+    out1.includes('deny') && out1.includes('权威面脚本'), out1.slice(0, 220));
+
+  // ② 父会话：载荷里没有 agent_type —— 父会话不受这条规则约束
+  const out2 = guard({
+    hook_event_name: 'PreToolUse', tool_name: 'bash', session_id: 'router-authority',
+    tool_input: { command: cmd }
+  });
+  ok('② 父会话执行同一脚本不被这条规则拦',
+    !out2.includes('权威面脚本'), out2.slice(0, 220));
+
+  // ③ 工作区里的同名副本：普通文件，不是权威入口
+  // （机制维护类成员要改的就是它们 —— 按脚本名裸匹配会误伤它们）
+  fs.mkdirSync(path.join(PROJ, 'tools'), { recursive: true });
+  fs.copyFileSync(AMEND, path.join(PROJ, 'tools', 'scope-amend.mjs'));
+  const W7 = 'worker-copy';
+  const TR7 = makeTranscript(W7, 'router-copy', 'worker', 'tools/scope-amend.mjs');
+  dispatch('tools/scope-amend.mjs', 'router-copy', 't-copy');
+  const out3 = guard({
+    hook_event_name: 'PreToolUse', tool_name: 'bash', session_id: W7,
+    agent_id: W7, agent_type: 'worker', transcript_path: TR7,
+    tool_input: { command: 'node "' + path.join(PROJ, 'tools', 'scope-amend.mjs') +
+      '" --tier full --agent worker --approver worker' }
+  });
+  ok('③ 工作区里的同名副本不被这条规则误拦',
+    !out3.includes('权威面脚本'), out3.slice(0, 220));
+  ok('③ 工作区里的同名副本照常按 scope 判定放行',
+    out3 === '', out3.slice(0, 220));
+}
+
+// ── D-58：护栏第二道防线按**形态**判 ─────────────────────
+//
+// 以前这道防线不分形态：边界里只要出现私有记忆目录前缀就**拒绝建立边界** ——
+// 于是管理员批的一条「精确文件只读」扩权把整个边界判死，
+// 那个 worker 的**每一次**工具调用都被拒（全线卡死，不只是那一个文件读不了）。
+//
+// 现在按形态判：只有**目录条目**（会按读模式展开成整棵子树）才触发；
+// 精确文件条目不展开，不触发 —— 它能不能读由**范围层**判。
+{
+  const W8 = 'worker-privfile';
+  const TR8 = makeTranscript(W8, 'router-privfile', 'worker',
+    'ro: .superagent/methods/sa-other.md, src/app/login.ts');
+  const g8 = guard({
+    hook_event_name: 'PreToolUse', tool_name: 'write', session_id: W8,
+    agent_id: W8, agent_type: 'worker', transcript_path: TR8,
+    tool_input: { file_path: 'src/app/login.ts' }
+  });
+  ok('私有记忆目录下的精确文件条目不触发第二道防线（worker 不卡死）',
+    g8 === '', g8.slice(0, 220));
+  const g8b = guard({
+    hook_event_name: 'PreToolUse', tool_name: 'read', session_id: W8,
+    agent_id: W8, agent_type: 'worker', transcript_path: TR8,
+    tool_input: { path: '.superagent/methods/sa-other.md' }
+  });
+  ok('那个精确文件仍由范围层判（私有记忆路径不授予）',
+    g8b.includes('deny') && g8b.includes('私有记忆目录'), g8b.slice(0, 220));
+}
+{
+  const W9 = 'worker-privdir';
+  const TR9 = makeTranscript(W9, 'router-privdir', 'worker', 'ro: .superagent/lessons/');
+  const g9 = guard({
+    hook_event_name: 'PreToolUse', tool_name: 'write', session_id: W9,
+    agent_id: W9, agent_type: 'worker', transcript_path: TR9,
+    tool_input: { file_path: 'src/app/login.ts' }
+  });
+  ok('私有记忆目录下的目录条目仍然拒绝建立边界',
+    g9.includes('deny') && g9.includes('私有记忆目录'), g9.slice(0, 220));
+}
+
 // ── 合成载荷探针（可选，人工取证用）────────────────────
 // 用法：$env:SAR_PROBE='1'; node tests/guard-test.mjs
 // 打印 5 个合成载荷的真实判定输出；「放行」= stdout 为空（没有任何输出）。

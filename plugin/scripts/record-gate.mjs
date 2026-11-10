@@ -31,15 +31,26 @@
 //   payload = { agent, task, domain, approach, evidence, verified_by }
 
 import fs from 'node:fs';
-import { readStdin, parseInput, readLedger } from './lib.mjs';
-import { methodPath } from './lessons.mjs';
+import { readStdin, parseInputStrict, readLedger } from './lib.mjs';
+import {
+  methodPath, locateRecordsSection, countRecordsInSection,
+  appendRecordsEntry, resolveWriter, writeFileLocked
+} from './lessons.mjs';
 
 const MAX_RECORDS = 20;   // 单个成员实战记录上限，超了先合并淘汰旧的
 const MAX_APPROACH = 300; // 单条「做法」字数上限，防写成流水账
-const SECTION = '## 实战记录';
 
 const argv = process.argv.slice(2);
-const payload = argv[0] ? JSON.parse(argv[0]) : parseInput(readStdin());
+const rawInput = argv[0] !== undefined ? argv[0] : readStdin();
+const parsed = parseInputStrict(rawInput);
+if (!parsed.ok) {
+  process.stdout.write(JSON.stringify({
+    ok: false,
+    errors: ['载荷解析失败：' + parsed.reason + ' —— 写入闸门在载荷读不出来时一律拒绝（放行即等于闸门整段失效）']
+  }, null, 2));
+  process.exit(0);
+}
+const payload = parsed.value;
 
 const errors = [];
 
@@ -49,6 +60,28 @@ const domain = String(payload.domain || '').trim();
 const approach = String(payload.approach || '').trim();
 const evidence = String(payload.evidence || '').trim();
 const verifiedBy = String(payload.verified_by || '').trim();
+
+// ── 0. 写入者身份（谁在写） ────────────────────────────────
+//
+// 判据在 lessons.mjs 的 resolveWriter()（单一事实源）：调用方必须带 session_id，
+// 闸门拿它去派工台账查该会话绑定的成员（agent_key），再与载荷里的 agent 比对。
+// 成员子会话只能写**绑定成员自己**的账本；父会话可以给本项目任何成员记账，
+// 但每一条都会把写入者写进条目本身，以便事后追责。
+//
+// 为什么履历也要查身份：履历是 Router 匹配成员时的依据（D-24）。
+// 若任何成员都能往兄弟成员的方法论文件里塞「成果」，
+// 那份文件就成了可伪造的匹配依据 —— 写进去的东西必须可信、可查、不能被伪造。
+const writer = resolveWriter(payload);
+if (!writer.ok) {
+  for (const e of writer.errors) errors.push(e);
+} else if (agent && !writer.canWrite(agent)) {
+  const who = writer.role === 'member'
+    ? '成员子会话（绑定成员：' + writer.boundAgent + '）'
+    : '父会话（派工过的成员：' + (writer.dispatched.join('、') || '无') + '）';
+  errors.push('写入者身份不符：会话 ' + writer.sessionId + ' 是' + who +
+    '，只能给这些成员的履历记账；载荷却要写「' + agent + '」的履历 —— ' +
+    '冒用他人身份写入被拒（写入目标由台账绑定决定，不由载荷独断）');
+}
 
 // 1. 必须指明是哪个成员
 if (!agent) errors.push('缺 agent（记录谁的成果）');
@@ -99,29 +132,21 @@ if (!raw) errors.push('方法论文件不存在：.superagent/methods/' + agent 
 // slice 得到空串，existing 恒为 0，20 条上限永不触发，履历无限增长。
 // 现在段尾定位只有一个函数、一种口径，计数与写入共用它 ——
 // 「同一文件两套索引口径」正是 D-21 的成因，所以这里从结构上消掉。
-const sectionStart = raw.indexOf(SECTION);
-const countIn = (s) => (s.match(/^###\s/gm) || []).length;
-const sectionEnd = sectionStart >= 0 ? nextSectionIndex(raw, sectionStart) : -1;
-const sectionBody = sectionStart >= 0
-  ? raw.slice(sectionStart, sectionEnd === -1 ? raw.length : sectionEnd)
-  : '';
-const existing = countIn(sectionBody);
-
-// 段定位自检：口径再混一次，这里会当场露馅，而不是静默当成「0 条」。
-if (sectionStart >= 0 && sectionEnd !== -1 && sectionEnd < sectionStart) {
-  errors.push('段定位异常：实战记录段的结束位置早于段首（索引口径不一致）—— 拒绝写入');
-}
-if (sectionStart >= 0 && existing === 0 && /^###\s/m.test(sectionBody)) {
-  errors.push('记录计数异常：段内有记录头却计为 0 条 —— 拒绝写入，不要静默当成 0');
-}
-if (existing >= MAX_RECORDS) {
+// 段首/段尾定位：**与读取端共用 lessons.mjs 的 locateRecordsSection**（D-51）。
+//
+// 历史 bug：这里曾用 indexOf('## 实战记录')（**子串**匹配），
+// 而读取端 readRecords 按**行首**匹配 —— 同一份文件两套口径。
+// 方法论文件正文里只要出现一次字面串（引用、说明、模板片段），
+// 写入端就定位到前一个段去 → 新履历落进「归属」段 → 读取端读不到（静默丢失），
+// 而且那个段里的其它「###」被当成履历条数 → 20 条上限被提前触顶。
+//
+// 现在定位、计数、插入三件事都走同一个函数（lessons.mjs），口径只有一份。
+// 条数上限在**锁外**先判一次（快速失败，不为明显超限的写入排队），
+// 但真正判定在锁内重读后再做一次 —— 锁外那份只是预判，可能已被并发写入改变。
+const sectionPreview = locateRecordsSection(raw);
+const existingPreview = sectionPreview.found ? countRecordsInSection(sectionPreview.body) : 0;
+if (existingPreview >= MAX_RECORDS) {
   errors.push('该成员实战记录已达上限 ' + MAX_RECORDS + ' 条 —— 先合并/淘汰旧记录');
-}
-
-// 下一个二级标题的**绝对索引**；没有下一段返回 -1。
-// 计数与写入共用它：两个地方各写一套索引口径，就是 D-21 的成因。
-function nextSectionIndex(text, from) {
-  return text.indexOf('\n## ', from + SECTION.length);
 }
 
 if (errors.length) {
@@ -130,28 +155,49 @@ if (errors.length) {
 }
 
 // 通过 —— 追加一条实战记录到方法论文件的「实战记录」段
-const d = new Date().toISOString().slice(0, 10);
+//
+// 走 lessons.mjs 的 writeFileLocked：跨进程锁 + 锁内重读 + 临时文件原子替换 + 回读校验。
+// 为什么履历也要这样：同一成员的方法论文件可能被并发写（验收与复盘撞车），
+// 读-改-写整体覆盖会让先写的那条**静默消失**，而两次写入都返回 ok:true（D-52 同族）。
+//
+// 条数上限也必须在锁内判：锁外判会被并发写入一起放行。
+const nowIso = new Date().toISOString();
+const d = nowIso.slice(0, 10);
 const entry = [
   '### ' + d + ' · ' + domain + ' · ' + task,
   '- 做法：' + approach,
   '- 证据：' + evidence,
   '- 验收：' + verifiedBy,
+  '- 写入者：' + writer.writer + ' · 会话 ' + writer.sessionId + ' · ' + nowIso,
   ''
 ].join('\n');
 
-let out;
-if (sectionStart >= 0) {
-  // 已有该段：插到该段末尾（下一个二级标题之前）
-  // 与计数共用 nextSectionIndex —— 写入路径不再自己算一遍段尾。
-  const after = nextSectionIndex(raw, sectionStart);
-  if (after === -1) {
-    out = raw.replace(/\s*$/, '\n') + '\n' + entry + '\n';
-  } else {
-    out = raw.slice(0, after).replace(/\s*$/, '\n') + '\n' + entry + '\n' + raw.slice(after).replace(/^\n+/, '\n');
+const res = writeFileLocked(file, (cur) => {
+  const sec = locateRecordsSection(cur);
+  const before = sec.found ? countRecordsInSection(sec.body) : 0;
+  if (before >= MAX_RECORDS) {
+    return { error: '该成员实战记录已达上限 ' + MAX_RECORDS + ' 条 —— 先合并/淘汰旧记录' };
   }
-} else {
-  out = raw.replace(/\s*$/, '\n') + '\n' + SECTION + '\n\n' + entry + '\n';
+  const text = appendRecordsEntry(cur, entry);
+  return {
+    text,
+    expectCount: before + 1,
+    marker: entry.trim(),
+    counter: (s2) => {
+      const x = locateRecordsSection(s2);
+      return x.found ? countRecordsInSection(x.body) : 0;
+    }
+  };
+});
+if (!res.ok) {
+  process.stdout.write(JSON.stringify({ ok: false, errors: [res.error] }, null, 2));
+  process.exit(0);
 }
-fs.writeFileSync(file, out, 'utf8');
-process.stdout.write(JSON.stringify({ ok: true, agent, records: existing + 1, file }, null, 2));
+// 条数按**落盘后**的文件数（锁内重读的结果），不是锁外预判值。
+const secFinal = locateRecordsSection(res.raw);
+const existing = secFinal.found ? countRecordsInSection(secFinal.body) : 0;
+process.stdout.write(JSON.stringify({
+  ok: true, agent, records: existing, file,
+  writer: writer.writer, writer_role: writer.role, session_id: writer.sessionId
+}, null, 2));
 process.exit(0);

@@ -41,8 +41,47 @@ export function rosterPath() {
 // 让「名录顺序」这件事只有一个定义处。
 export function listMembers(roster) {
   const members = roster && Array.isArray(roster.members) ? roster.members : [];
-  return [...members].sort((a, b) =>
-    String(a.name || '').localeCompare(String(b.name || '')));
+  return dedupeByName([...members].sort((a, b) =>
+    String(a.name || '').localeCompare(String(b.name || ''))));
+}
+
+// ── 重名去重（D-57）────────────────────────────────────────
+//
+// roster.json 里出现同名成员（手改文件绕过 register 的重名拒绝）时，
+// 同一个成员会在实战记录摘要里出现两次：既重复计数，又白占一个取样名额，
+// 被挤掉的其他人就此少一个可见位置 —— 正是 D-24 想消除的那类「结构性不可见」。
+//
+// 口径：**同名取一条**（排序后的第一条），并把重名显式报出来。
+// 为什么不是「静默取一条」：静默去重会让「名录里有两个人叫同一个名字」这件事
+// 从此无人知晓 —— 记录看得见但不可查，等于没去重。
+// 报出的方式放在返回值里（duplicateNames），由调用方决定怎么呈现，
+// 这样读端与 CLI 都能拿到同一份事实，不至于两处各判一次。
+export function dedupeByName(members) {
+  const list = Array.isArray(members) ? members : [];
+  const seen = new Map();
+  const out = [];
+  for (const m of list) {
+    const name = String((m && m.name) || '').trim();
+    if (!name) continue;
+    if (seen.has(name)) continue;
+    seen.set(name, m);
+    out.push(m);
+  }
+  return out;
+}
+
+// 名录里的重名成员名（去重时被合并掉的那些）。
+export function duplicateNames(roster) {
+  const members = roster && Array.isArray(roster.members) ? roster.members : [];
+  const seen = new Set();
+  const dup = [];
+  for (const m of members) {
+    const name = String((m && m.name) || '').trim();
+    if (!name) continue;
+    if (seen.has(name)) { if (!dup.includes(name)) dup.push(name); continue; }
+    seen.add(name);
+  }
+  return dup;
 }
 
 export function readRoster() {
@@ -146,9 +185,12 @@ function cmdList() {
       lastRecord: recs.length ? recs[recs.length - 1].title : ''
     };
   });
+  const dup = duplicateNames(roster);
   process.stdout.write(JSON.stringify({
     roster_size: roster.members.length,
     roster_cap: MAX_ROSTER,
+    // 重名成员：同一份名录里出现多个同名成员 —— 已按名去重，这里显式报出异常
+    duplicateNames: dup,
     members
   }, null, 2));
   process.exit(0);

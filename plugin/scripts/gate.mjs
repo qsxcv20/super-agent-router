@@ -10,7 +10,7 @@
 //   ③ 信号词必须与动作词邻近同现，防「同时打开文件」「批量导入」这类伪信号误触发；
 //   ④ 载荷解析失败不再静默：留痕而不是悄悄不命中。
 import { readStdin, parseInputStrict, extractScope, judgeTriggerIntent, writeGateTrace } from './lib.mjs';
-import { summarizeRecordsDetailed } from './records.mjs';
+import { summarizeRecordsDetailed, SUMMARY_MAX_MEMBERS } from './records.mjs';
 
 const raw = readStdin();
 const parsed = parseInputStrict(raw);
@@ -38,7 +38,7 @@ const scope = extractScope(prompt);
 if (!verdict.hit) {
   // 条件式兜底：只有「roster 存在 + 有专项成员 + 该成员有实战记录」时才注入一行。
   // 没有可用专项成员的工作区（单点小改）保持 0 字节输出。
-  const fb = summarizeRecordsDetailed(3, 12);
+  const fb = summarizeRecordsDetailed(3, SUMMARY_MAX_MEMBERS);
   if (fb.members.length) {
     process.stdout.write(
       '[super-agent-router] 本工作区有可复用的专项成员（本轮未判定为编排需求，故不展开）：' +
@@ -74,7 +74,7 @@ if (scope.length) {
 // 「排在名录后面就结构性不可见」这件事从根上消失（契约 S7.3 / D-24）。
 // 取样顺序直接用 records.mjs 的口径（成果条数降序 -> 同条数按名字升序），
 // 不在这里另起一套排序，否则两处口径迟早不一致。
-const summary = summarizeRecordsDetailed(3, 12);
+const summary = summarizeRecordsDetailed(3, SUMMARY_MAX_MEMBERS);
 const summaries = summary.members;
 if (summaries.length) {
   lines.push('');

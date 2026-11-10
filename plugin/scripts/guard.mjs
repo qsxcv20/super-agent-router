@@ -24,6 +24,7 @@
 // 第 4 条是这次改造的核心：以前「解析不到 brief / 取不到目标路径」都是 process.exit(0)，
 // 那不是「没关系」，那是越界管控整段失效而不报错（D-01 / D-02 / D-04 / D-16）。
 import path from 'node:path';
+import os from 'node:os';
 import {
   readStdin, parseInputStrict, readLedger, writeLedger, inScope,
   findBinding, upsertBinding, readBriefFromTranscript, scopeOverlaps,
@@ -31,7 +32,8 @@ import {
   splitCommandTokens, isReadOnlyCommand, extractWriteTargets, hasWriteVerb,
   DANGEROUS_COMMAND, detectDangerousAccountCommand, hasCommandSubstitution,
   recordScopeRequest, memberTier, withinWorkspace, touchesSuperagentPath, TIER_FULL,
-  normScopeEntry
+  TIER_SCOPED, normScopeEntry, isPrivateMemoryPath, isPrivateMemoryEntry,
+  expandsPrivateMemoryTree, PRIVATE_MEMORY_DIRS
 } from './lib.mjs';
 
 const rawStdin = readStdin();
@@ -200,6 +202,8 @@ if (!binding) {
     })
     .sort((a, b) => (b.at || 0) - (a.at || 0))[0];
   if (d) binding.dispatch_id = d.dispatch_id || '';
+  // 权限等级的**快照**：worker 操作的等级 = 派工那一刻的等级（见 dispatchTier 的注释）。
+  binding.tier = dispatchTier(d, agentKey);
   // 边界 = brief 原文 ∪ **已批准扩权**。
   // brief 是权威来源（它写清了父会话批准了什么），但台账里可能有**后来批准**的扩权 ——
   // 那是父会话显式授权的，必须生效；否则「批准扩权」对还没发起过工具调用的 worker 无效。
@@ -215,6 +219,12 @@ if (!binding) {
     injected = '[super-agent-router] ' + (d.agent_key || d.agent || '该成员') + ' 的历史教训（开工前先看）：\n' +
       d.lessons.map((r, i) => (i + 1) + '. ' + r).join('\n');
   }
+} else if (!binding.tier) {
+  // 升级前建的绑定没有等级字段：按名录读一次并**冻结**进绑定。
+  // 免得每次调用都重读（也免得机制升级本身把老会话的等级打回 scoped）。
+  binding.tier = dispatchTier(null, binding.agent_key || binding.agent);
+  upsertBinding(ledger, binding);
+  writeLedger(ledger);
 }
 
 // 私有记忆目录不得出现在 worker 的边界里（闸门 1c 的第二道防线）。
@@ -222,18 +232,23 @@ if (!binding) {
 // 为什么要第二道：binding 也可以**直接从 transcript 的 brief** 建起来
 //（没有对应派工记录时）—— 那条路不经过 dispatch，闸门 1c 拦不到。
 // 漏这一道 = 兄弟成员的错题本与 Router 私有账可以被读走（D-31）。
-const PRIVATE_MEMORY_DIRS = ['.superagent/lessons', '.superagent/methods'];
+//
+// **按形态判（D-58）**：只有**目录条目**才触发这道防线 ——
+// 目录条目会按读模式展开成整棵子树（放开兄弟成员的错题本全文）；
+// **精确文件条目**不展开，不触发 —— 它能不能读由**范围层**判（私有记忆路径一律不授予）。
+//
+// 以前这里不分形态：一条精确文件条目就把**整个边界**判死 ——
+// 管理员批的精确只读扩权成了死条目，而这个 worker 的**每一次**工具调用都被拒，
+// 全线卡死（不只是那一个文件读不了）。那道防线拦的是「展开」，不是「路径」。
 for (const e of (binding && Array.isArray(binding.scope) ? binding.scope : [])) {
-  const p = normScopeEntry(e);
-  if (!p) continue;
-  const hit = PRIVATE_MEMORY_DIRS.find((m) => p.path === m || p.path.startsWith(m + '/'));
-  if (hit) {
-    deny('[super-agent-router] 越界管控拒绝建立：本次派工的边界里含成员的私有记忆目录（' + hit + '/）。' +
-      '读模式按「条目所在目录」当树根，写进白名单等于让 worker 读到**兄弟成员的错题本全文**' +
-      '与 Router 私有账 —— 这正是「成员互相篡位」的那条路。' +
-      '被派工成员自己的方法论与错题本由 guard 按精确文件单独放行，与 SCOPE 无关；' +
-      '需要别人的历史请让 Router 转写进 brief。');
-  }
+  if (!expandsPrivateMemoryTree(e)) continue;
+  deny('[super-agent-router] 越界管控拒绝建立：本次派工的边界里含成员的私有记忆目录**条目**（' +
+    String(e) + '）。' +
+    '**目录条目**会按读模式展开成整棵子树 ⇒ 读到**兄弟成员的错题本全文**与 Router 私有账' +
+    '—— 这正是「成员互相篡位」的那条路。' +
+    '（精确文件条目不触发这条防线：它不展开，能不能读由范围层判。）' +
+    '被派工成员自己的方法论与错题本由 guard 按精确文件单独放行，与 SCOPE 无关；' +
+    '需要别人的历史请让 Router 转写进 brief。');
 }
 
 if (!binding || !Array.isArray(binding.scope) || !binding.scope.length) {
@@ -266,6 +281,76 @@ function allowedByExact(target) {
   return exactPaths.some((p) => inScope([p], target, 'exact'));
 }
 
+// ── 权威面脚本：父会话专属 ─────────────────────────────
+//
+// 这些脚本是**权限与记录的入口**，它们内部自己写文件（roster.json / 派工台账 /
+// 错题本 / 履历）。护栏对「脚本内部发生的 fs 写入」没有判定能力
+// （契约 S13.5：hook 是护栏不是沙箱）—— 于是 worker 只要能在 bash 里把它们跑起来，
+// 就绕开了整套 scope 判定：自己给自己提权、自己批准自己的越界请求（F1）。
+//
+// 主防线在这里：子代理上下文（载荷带 agent_type）里执行这些脚本 = 直接拒绝。
+// 父会话不受影响 —— 父会话载荷里没有 agent_type，上面已经早退了。
+//
+// 匹配按**插件根目录下的具体文件**，不按脚本名裸匹配：
+// 工作区里的同名副本是普通文件（机制维护类成员要改的就是它们），按名字拦会误伤；
+// 插件安装目录下的那一份才是运行时真正加载的权威入口。
+const AUTHORITY_SCRIPTS = [
+  'scope-amend.mjs',    // 提权 / 批准扩权
+  'release-slot.mjs',   // 释放名额
+  'record-gate.mjs',    // 写履历
+  'lessons-gate.mjs',   // 写错题本
+  'roster.mjs'          // 登记成员
+];
+
+// 插件根目录（<root>/scripts/guard.mjs -> <root>）。
+// 必须落成**绝对路径**：相对路径下工作目录一变，匹配就跟着变 ——
+// 仓库副本与安装副本的行为必须一致，否则同一套断言在两处给出不同结论。
+function pluginRootDir() {
+  try {
+    const p = String(process.argv[1] || '');
+    if (!p) return '';
+    return path.resolve(path.dirname(path.dirname(p)));
+  } catch (e) { return ''; }
+}
+
+// 把 ~ / $HOME / %USERPROFILE% 展开成真实家目录。
+// 不展开的话，`node $HOME/.minimax/plugins/.../scope-amend.mjs` 这种写法
+// 会因为路径对不上而绕过权威面脚本判定 —— 护栏最怕的就是这种「换个写法就躲开」。
+function expandHome(p) {
+  let s = String(p || '');
+  let home = '';
+  try { home = String(os.homedir() || '').replace(/\\/g, '/'); } catch (e) { home = ''; }
+  if (!home) return s;
+  if (s === '~') return home;
+  if (s.startsWith('~/')) return home + s.slice(1);
+  const prefixes = ['$HOME/', '$USERPROFILE/', '$env:USERPROFILE/', '%USERPROFILE%/'];
+  for (const pre of prefixes) {
+    if (s.startsWith(pre)) return home + '/' + s.slice(pre.length);
+  }
+  return s;
+}
+
+// 命令里是否指向插件安装目录下的权威面脚本。命中返回脚本名，否则空串。
+function authorityScriptHit(cmd) {
+  const root = pluginRootDir();
+  if (!root) return '';
+  const base = root.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const text = String(cmd || '');
+  const toks = extractPathTokens(text).concat(extractWriteTargets(text));
+  for (const raw of toks) {
+    let t = expandHome(String(raw || '')).replace(/\\/g, '/').trim();
+    if (!t) continue;
+    // 相对路径按**插件根**解析（从插件目录里跑 scripts/xxx.mjs 的常见写法）；
+    // 不按工作区解析 —— 工作区里的同名副本是普通文件，不是权威入口。
+    if (!/^[a-z]:\//i.test(t) && !t.startsWith('/')) t = base + '/' + t;
+    const low = t.toLowerCase();
+    for (const name of AUTHORITY_SCRIPTS) {
+      if (low === base + '/scripts/' + name) return name;
+    }
+  }
+  return '';
+}
+
 // ── 权限等级（契约 S13）────────────────────────────────
 //
 // tier 是**管理员授予的成员属性**，声明在项目级 .superagent/roster.json 里，
@@ -279,8 +364,23 @@ function allowedByExact(target) {
 // 为什么不是「自动批准」：让被约束者自己决定边界 = 授权模型被拆掉。
 // 这里自动的是**发现与记账**，批准权始终在父会话手里。
 const memberName = (binding && (binding.agent_key || binding.agent)) || agentType;
-const tier = memberTier(memberName);
+// 等级取**绑定里的快照**，不再每次工具调用都重读名录（见 dispatchTier 的注释）。
+const tier = String((binding && binding.tier) || dispatchTier(null, memberName));
 const fullTier = tier === TIER_FULL;
+
+// 权限等级的**快照**（F1-4）。
+//
+// 以前每次工具调用都重读 roster.json —— worker 若能在会话中途改自己的等级
+// （绕过 CLI 的那条路），后面每一次判定都按新等级走，一次提权就长期有效。
+// 快照让「会话中途自提权」对**当前会话**无效：下一个派工才按新等级生效。
+//
+// 兜底：派工记录里没有等级字段（升级前的旧派工）时按名录读一次并**冻结**进绑定 ——
+// 旧绑定不该因为机制升级突然掉回 scoped。
+function dispatchTier(dispatchRec, agentKey) {
+  const snap = dispatchRec ? String(dispatchRec.tier || '') : '';
+  if (snap === TIER_FULL || snap === TIER_SCOPED) return snap;
+  return memberTier(agentKey) === TIER_FULL ? TIER_FULL : TIER_SCOPED;
+}
 
 function inAllowed(target, m) {
   // full 等级 = 项目工作区内自由读写，**但 .superagent/ 除外**。
@@ -297,7 +397,10 @@ function inAllowed(target, m) {
 //
 // 自动的是**发现与记账**；**批准权仍在父会话手里** ——
 // 让被约束者自己决定边界，等于把授权模型整个拆掉。
-function denyOutOfScope(reason, outside, mode) {
+function denyOutOfScope(reason, outside, mode, opts) {
+  // approvable=false：这条请求**批准了也不会生效** —— 不给批准提示，
+  // 免得把父会话引去做一次注定无效的批准。
+  const approvable = !(opts && opts.approvable === false);
   let reqId = '';
   try {
     reqId = recordScopeRequest(ledger, {
@@ -318,10 +421,64 @@ function denyOutOfScope(reason, outside, mode) {
     const root = path.dirname(path.dirname(String(process.argv[1] || '')));
     if (root) amendCmd = path.join(root, 'scripts', 'scope-amend.mjs');
   } catch (e) {}
-  const hint = reqId
-    ? '（已记入待审清单 ' + reqId + '：父会话可用 ' + amendCmd + ' --grant ' + reqId + ' 批准扩权）'
-    : '（越界请求未能记账：请父会话直接改 SCOPE 后重新派工）';
+  const hint = !approvable
+    ? '（该目标**批准也不会生效**：写权限对编排层私有状态目录一律不授 —— 请让父会话改派工范围或直接改 SCOPE，不要在这里申请批准）'
+    : reqId
+      ? '（已记入待审清单 ' + reqId + '。批准命令：' + amendCmd + ' --grant ' + reqId +
+        ' —— **这条命令只有父会话能执行**：它是父会话专属的权限入口，worker 自行执行会被护栏直接拒绝）'
+      : '（越界请求未能记账：请父会话直接改 SCOPE 后重新派工）';
   deny(reason + hint);
+}
+
+// 越界目标的**分型诊断**（F3）。
+//
+// 为什么要分型：full 等级命中编排层私有状态目录时，说成「在工作区之外」是错的诊断
+//（目标其实在工作区内），而「批准该路径后重试」的建议**永远不生效**
+//（写模式对私有目录一律不授写权）—— 会把父会话引去做无效批准、worker 反复撞墙。
+//
+// 返回 { reason, approvable }：
+//   approvable=false → 这条请求批准了也不会生效，所以**不给批准提示**。
+//   工作区外的路径能逐条批准；私有目录的**写**不能；私有目录的**读**能
+//   （只读条目精确生效）；full 等级一律不给批准提示。
+function outOfScopeVerdict(outside, mode) {
+  const privMem = outside.filter((t) => isPrivateMemoryPath(t));
+  const priv = outside.filter((t) => touchesSuperagentPath(t) && !isPrivateMemoryPath(t));
+  const far = outside.filter((t) => !touchesSuperagentPath(t));
+  const parts = [];
+  if (privMem.length) {
+    parts.push('目标 ' + privMem.slice(0, 5).join(', ') +
+      ' 在成员的**私有记忆目录**（.superagent/lessons、.superagent/methods）下 —— ' +
+      '范围层**一律不授予**（契约 S13.4）：读请求同样不放行，扩权也不会生效；' +
+      '需要它的内容请让 Router 转写进 brief（契约通道），不要走扩权');
+  }
+  if (priv.length) {
+    parts.push((fullTier
+      ? '该成员是 full 等级（项目工作区内自由读写），但目标 '
+      : '目标 ') + priv.slice(0, 5).join(', ') +
+      ' 在编排层私有状态目录（.superagent/）内' +
+      (fullTier ? ' —— **full 等级也不放行**' : '，不在白名单内') +
+      '（该目录存着成员的权限等级与彼此的错题本，写权限对私有目录一律不授）');
+  }
+  if (far.length) {
+    parts.push((fullTier
+      ? '该成员是 full 等级（项目工作区内自由读写），以下路径在**工作区之外**'
+      : '本次派工声明的 SCOPE 为 [' + scope.join(', ') + ']，以下路径不在白名单内') +
+      '：' + far.slice(0, 5).join(', '));
+  }
+  // 能不能批准：工作区外的路径能（逐条批准）；**私有记忆目录一律不能**
+  // （范围层不授予，扩权入口也会拒 —— 给了就是一条永远不生效的死条目）；
+  // .superagent/ 根下的**读**请求能（精确文件条目精确生效），写不能；
+  // full 等级一律不给批准提示。
+  const approvable = far.length > 0
+    ? true
+    : (privMem.length > 0 ? false
+      : (fullTier ? false : (mode === 'read' && priv.length > 0)));
+  return {
+    reason: '[super-agent-router] 越界拦截：' + parts.join('；') +
+      (got && got.mode === 'read' && !fullTier ? '（读操作允许范围为 scope 所在目录树）' : '') +
+      '。如确需修改，先更新 scope 并重新派工，不要自行扩大范围。',
+    approvable
+  };
 }
 
 // ── 取目标 ────────────────────────────────────────────
@@ -401,6 +558,19 @@ const targets = got.targets.filter((t) => String(t || '').trim());
 // 本来就没有路径 token，套进去会把正常命令全拦掉。
 if (tool === 'bash') {
   const cmd = String(tInput.command || '');
+  // 权威面脚本：父会话专属（F1 主防线）。
+  //
+  // 为什么放在最前面：这些脚本内部自己写名录 / 台账 / 错题本，护栏对脚本内部的写入
+  // 没有判定能力（契约 S13.5）—— 判它们**被谁执行**是唯一能拦住的判定。
+  // 父会话不受影响（载荷里没有 agent_type，上面已早退）。
+  const authorityHit = authorityScriptHit(cmd);
+  if (authorityHit) {
+    deny('[super-agent-router] 已拦截：子代理执行了**父会话专属的权威面脚本**（权限/记录入口：' + authorityHit + '）。' +
+      '这类脚本内部直接写名录 / 派工台账 / 错题本，护栏对「脚本内部发生的写入」没有判定能力' +
+      '（契约 S13.5：hook 是护栏不是沙箱）—— 所以它们**只允许父会话执行**。' +
+      '要提权或批准扩权，让父会话执行它那条命令（拦截文案里会给全）；' +
+      'worker 自行执行会被这条规则直接拒绝，**即使 SCOPE 覆盖了插件目录**。');
+  }
   // 命令替换（$(...) / 反引号）里的内容会被 shell 真的执行，
   // 所以带替换的命令不能按「纯读命令」算 ——
   // cat $(mavis agent delete x) 的段首是 cat，但删成员的是替换里那条命令。
@@ -446,12 +616,8 @@ if (tool === 'bash') {
   }
   const outside = targets.filter((t) => !inAllowed(t, got.mode));
   if (outside.length) {
-    const boundary = fullTier
-      ? '该成员是 full 等级（项目工作区内自由读写），以下路径在**工作区之外**：'
-      : '本次派工声明的 SCOPE 为 [' + scope.join(', ') + ']，以下路径不在白名单内：';
-    denyOutOfScope('[super-agent-router] 越界拦截：' + boundary +
-      outside.slice(0, 5).join(', ') +
-      '。如确需修改，先更新 scope 并重新派工，不要自行扩大范围。', outside, got.mode);
+    const verdict = outOfScopeVerdict(outside, got.mode);
+    denyOutOfScope(verdict.reason, outside, got.mode, { approvable: verdict.approvable });
   }
   allow(injected);
   process.exit(0);
@@ -477,12 +643,5 @@ if (outside.length === 0) {
   allow(injected);
   process.exit(0);
 }
-const reason = fullTier
-  ? '[super-agent-router] 越界拦截：该成员是 full 等级（项目工作区内自由读写），目标 ' +
-    outside.slice(0, 5).join(', ') + ' 在**工作区之外**。' +
-    '如确需操作，由父会话批准该路径后重试。'
-  : '[super-agent-router] 越界拦截：本次派工声明的 SCOPE 为 [' +
-    scope.join(', ') + ']，目标 ' + outside.slice(0, 5).join(', ') + ' 不在白名单内' +
-    (got.mode === 'read' ? '（读操作允许范围为 scope 所在目录树）' : '') + '。' +
-    '如确需操作，先更新 scope 并重新派工，不要自行扩大范围。';
-denyOutOfScope(reason, outside, got.mode);
+const verdict = outOfScopeVerdict(outside, got.mode);
+denyOutOfScope(verdict.reason, outside, got.mode, { approvable: verdict.approvable });
