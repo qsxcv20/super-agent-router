@@ -1587,7 +1587,15 @@ export function writeGateTrace(kind, detail) {
   try {
     const base = process.env.PLUGIN_DATA;
     if (!base) return false;
-    const dir = path.join(base, 'hooks', 'super-agent-router');
+    // PLUGIN_DATA 在不同上下文里含义不同：
+    //   运行时 = .../plugin-data/hooks/super-agent-router（本插件的专属目录）
+    //   测试里 = .../plugin-data（整个根）
+    // 无条件再拼一层 hooks/super-agent-router，运行时痕迹就落到多套一层的怪路径 ——
+    // 痕迹**确实写了**，但按文档给的路径去找找不到，等于半个静默失效（D-29）。
+    // 所以按目录名判断：已经是本插件目录就直接写进去，否则才补一层。
+    const dir = /hooks[\\/]super-agent-router$/i.test(base)
+      ? base
+      : path.join(base, 'hooks', 'super-agent-router');
     fs.mkdirSync(dir, { recursive: true });
     fs.appendFileSync(
       path.join(dir, 'gate-trace.jsonl'),

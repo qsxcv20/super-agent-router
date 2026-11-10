@@ -38,6 +38,7 @@
 | D-24 | RG-18 | P2 | 契约层 | 实战记录摘要按 roster 顺序截断 6 名，排位靠后的成员记录结构性不可见 |
 | D-27 | 用户反馈 | P0 | 机制层 | 主动触发粗筛漏判 83%：口语化编排请求几乎全部静默放行，Router 不知道编排机制存在 |
 | D-28 | 本轮实测 | P2 | 机制层 | 派工被取消/中断时不触发 SubagentStop，并发名额泄漏到 TTL（2 小时），机制没有可用释放入口 |
+| D-29 | 本轮实测 | P3 | 机制层 | 留痕路径多套一层目录：痕迹写了，但按文档给的路径找不到 —— 留痕不可发现等于半个静默失效 |
 
 **合并与剔除说明**
 
@@ -398,6 +399,17 @@
 - 修法方向：① 契约 S6.2 补第 5 条：取消场景由**发起方显式释放**，入口由插件自带；② 释放只把 `active` 翻成 `aborted`，`done` / `aborted` 的记录一个字节都不动；③ 目标不存在或台账读不出来时**报错退出**，不许静默成功 —— 否则调用方以为名额放掉了，实际还在占着；④ 台账条目里**没有子会话 id**，所以「自动探测子会话是否还活着」不可行，能自动拿到的只有终止事件而取消场景没有终止事件 —— 这条写进契约，免得下次又去做自动探测。
 - 还需要什么：若平台将来提供「派工被取消」的事件（类似 SubagentStop 的取消态），应改为**事件驱动自动回收**，本入口退化为兜底。当前无平台事件可用。
 - 来源：本轮「主动触发还有其他的」定点排查中实测暴露 ｜ 严重度：P2 ｜ 归属层：机制层
+
+### D-29
+- 触发条件：`writeGateTrace` 把留痕写到 `PLUGIN_DATA/hooks/super-agent-router/gate-trace.jsonl`，但运行时 PLUGIN_DATA **本身就是** `.../plugin-data/hooks/super-agent-router` —— 再拼一层就落到多套一层的怪路径。
+- 影响：痕迹**确实写了**（机制没失效），但按文档给出的路径去找**找不到文件** —— 排查「为什么 gate 从不命中」的人会去 `PLUGIN_DATA/hooks/super-agent-router/gate-trace.jsonl` 找，那里是空的。**留痕存在却不可发现，等于半个静默失效。**
+- 复现步骤：1) 设 PLUGIN_DATA=<运行时的 plugin-data 目录>；2) 用非法 JSON 喂 `plugin/scripts/gate.mjs`；3) 去 `PLUGIN_DATA/hooks/super-agent-router/gate-trace.jsonl` 找 —— 没有；4) 去 `PLUGIN_DATA/hooks/super-agent-router/hooks/super-agent-router/gate-trace.jsonl` 找 —— 在。
+- 证据：本轮活体实测 —— 坏载荷跑完，实际落盘路径为 `C:\Users\yang2\.minimax\v2\plugin-data\hooks\super-agent-router\hooks\super-agent-router\gate-trace.jsonl`。
+- 状态：**已修复（v0.5.2）**
+- 修复后证据：写入目录改为「PLUGIN_DATA 已是插件专属目录时直接写它，否则才补一层」；新增回归断言（痕迹必须落在 PLUGIN_DATA 下一层，且不得产生多套一层的怪目录），挂在 `.superagent/e2e-test.mjs`。
+- 修法方向：目录拼接不能假设「PLUGIN_DATA 是插件根」—— 它在不同上下文里含义不同（运行时=插件专属目录；测试里=整个 plugin-data 根），所以要**按目录名判断**而不是无条件拼接。
+- 还需要什么：无。
+- 来源：本轮 D-28 之后的链路活体复查 ｜ 严重度：P3 ｜ 归属层：机制层
 
 ## 五、v0.5.0 修复状态（2026-11-10）
 

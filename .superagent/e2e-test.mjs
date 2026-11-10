@@ -141,6 +141,24 @@ function makeCodexTranscript(session, parent, agent, scope) {
   const traced = fs.existsSync(traceFile) && fs.readFileSync(traceFile, 'utf8').includes('payload-parse-failed');
   ok('D-27 载荷解析失败留下痕迹', traced, 'err=' + (bad.stderr || '').slice(0, 120));
   ok('D-27 载荷坏时不注入任何内容', (bad.stdout || '').trim() === '', JSON.stringify(bad.stdout || '').slice(0, 120));
+
+  // D-29：运行时 PLUGIN_DATA 本身就是本插件的专属目录，
+  //        痕迹必须落在它**下一层**，不能再多套一层 hooks/super-agent-router
+  {
+    const runtimeShape = path.join(tmp, 'plugin-data', 'hooks', 'super-agent-router');
+    fs.mkdirSync(runtimeShape, { recursive: true });
+    spawnSync('node', [path.join(PLUGIN_ROOT, 'scripts', 'gate.mjs')], {
+      input: '{ this is not json',
+      env: { ...process.env, PLUGIN_ROOT, PLUGIN_DATA: runtimeShape, MINIMAX_PROJECT_DIR: tmp },
+      encoding: 'utf8'
+    });
+    const direct = path.join(runtimeShape, 'gate-trace.jsonl');
+    const nested = path.join(runtimeShape, 'hooks', 'super-agent-router', 'gate-trace.jsonl');
+    const directHit = fs.existsSync(direct) && fs.readFileSync(direct, 'utf8').includes('payload-parse-failed');
+    ok('D-29 痕迹落在 PLUGIN_DATA 下一层（不多套一层）', directHit,
+      'direct=' + fs.existsSync(direct) + ' nested=' + fs.existsSync(nested));
+    ok('D-29 不产生多套一层的怪目录', !fs.existsSync(nested), 'nestedExists=' + fs.existsSync(nested));
+  }
 }
 
 // 2. 派工登记：scope 只收路径，自然语言被过滤

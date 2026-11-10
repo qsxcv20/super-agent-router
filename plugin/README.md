@@ -227,6 +227,18 @@ node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\release-slot.
 只把仍在飞的（`active`）记录翻成 `aborted`，已完成的记录不动。
 id 写错或台账读不出来时会直接报错退出，不会「假装释放成功」。
 
+### 11. 粗筛像是从不命中？先看留痕文件
+
+载荷坏掉时（平台改了字段名、JSON 不合法），粗筛会**留痕而不是静默退出**。
+痕迹文件在插件的数据目录下：
+
+```powershell
+Get-Content "$env:USERPROFILE\.minimax\v2\plugin-data\hooks\super-agent-router\gate-trace.jsonl" -Tail 20
+```
+
+- 看到 `payload-parse-failed` 或 `prompt-field-missing` → 是**载荷问题**，不是粗筛词表的问题；
+- 文件不存在 → 载荷没问题，是「没命中」，回第 2 步看意图词。
+
 ## 只读条目 `ro:`：想让它读，但不想让它改
 
 同一个 SCOPE 清单里，两种条目可以混着用：

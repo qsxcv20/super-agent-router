@@ -291,3 +291,18 @@ node scripts/release-slot.mjs '{"parent_session_id":"mvs_xxx"}'
 
 **顺手更正的一处长期错误**：hooks.json 实际是 **4 类事件 / 7 条规则**，
 但「5 类」在思维导图、`context-flow.md`、`verification-v050.md`、缺陷台账四处传了一整轮，四处已统一改掉。
+
+### 五、v0.5.2 顺带查出的 D-29：留痕路径多套一层目录
+
+`writeGateTrace` 原来无条件把痕迹写到 `PLUGIN_DATA/hooks/super-agent-router/gate-trace.jsonl`，
+但运行时 PLUGIN_DATA **本身就是** `.../plugin-data/hooks/super-agent-router` —— 再拼一层就落到：
+
+`.../plugin-data/hooks/super-agent-router/hooks/super-agent-router/gate-trace.jsonl`
+
+痕迹**确实写了**，但按文档给的路径去找**找不到文件** ——
+排查「为什么 gate 从不命中」的人会去 `PLUGIN_DATA/hooks/super-agent-router/gate-trace.jsonl` 找，那里是空的。
+**留痕存在却不可发现，等于半个静默失效。**
+
+现在按目录名判断：PLUGIN_DATA 已是本插件目录时直接写进去，否则才补一层。
+变异检验：把修复回退后，`.superagent/e2e-test.mjs` 里恰好那 2 条 D-29 断言变红（direct=false nested=true），其余全过 ——
+断言不是空转。

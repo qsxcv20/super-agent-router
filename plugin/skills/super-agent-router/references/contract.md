@@ -308,5 +308,7 @@ UserPromptSubmit 的粗筛决定「这一轮要不要展开编排流程」。判
 否则**必须 0 字节输出**（单点小改零噪声）。兜底只提示「可以查 roster」，**不改写 owns 归属**。
 
 **载荷坏了必须留痕**：UserPromptSubmit 载荷解析失败、或 prompt 字段不在，
-都必须写一条痕迹（PLUGIN_DATA/hooks/super-agent-router/gate-trace.jsonl），
+都必须写一条痕迹到 **PLUGIN_DATA 目录下的 `gate-trace.jsonl`**
+（运行时 PLUGIN_DATA 本身就是本插件的专属目录 `.../plugin-data/hooks/super-agent-router`，
+所以痕迹就在它**下一层**；不要再多拼一层 `hooks/super-agent-router` —— 那是 D-29 修掉的坑），
 **不得**静默退出 —— 静默会让「永远不命中」和「判定为不该命中」在日志里长得一样。

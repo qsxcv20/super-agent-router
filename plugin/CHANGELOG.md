@@ -47,7 +47,17 @@ hooks.json 实际是 **4 类事件 / 7 条规则**（SessionStart、UserPromptSu
 但「5 类」这个说法在思维导图、`context-flow.md`、`verification-v050.md`、缺陷台账四处传了一整轮。
 四处已统一更正为「4 类事件 / 7 条规则」。
 
-### 变更 3：思维导图升到 v0.5.1 并修正
+### 变更 3：留痕路径更正（D-29）
+
+`writeGateTrace` 原来无条件把痕迹写到 `PLUGIN_DATA/hooks/super-agent-router/gate-trace.jsonl`，
+但运行时 PLUGIN_DATA **本身就是** `.../plugin-data/hooks/super-agent-router` —— 再拼一层就落到多套一层的怪路径。
+痕迹**确实写了**，但按文档给的路径去找**找不到文件** —— 排查「为什么 gate 从不命中」的人会扑空。
+**留痕存在却不可发现，等于半个静默失效。**
+
+现在按目录名判断：PLUGIN_DATA 已是本插件目录时直接写进去，否则才补一层。
+新增回归断言挂在 `.superagent/e2e-test.mjs`（痕迹必须落在 PLUGIN_DATA 下一层，且不得产生多套一层的怪目录）。
+
+### 变更 4：思维导图升到 v0.5.1 并修正
 
 `docs/super-agent-router-v0.5.1-思维导图.html`：版本号、S1~S11、触发语义、
 复合层「派发随会话而变」的更正（见 0.5.1 的 D-26 翻案），并补上 v0.5.1 的两张变更卡。
@@ -68,7 +78,7 @@ hooks.json 实际是 **4 类事件 / 7 条规则**（SessionStart、UserPromptSu
 - 删掉 prompt.length > 40 硬门槛，改成「信号词 + 邻近动作词」（窗口 12 字符）。
   「同时 / 多个 / 分别 / 各自 / 一起」单独出现不算意图，「并行」还要求带动作后缀。
 - plugin/scripts/gate.mjs 改用严格解析；载荷解析失败或 prompt 字段缺失时写一条痕迹到
-  PLUGIN_DATA/hooks/super-agent-router/gate-trace.jsonl，不再静默退出。
+  PLUGIN_DATA 目录下的 gate-trace.jsonl，不再静默退出。
 - 未命中时**条件式**兜底：仅当「roster 存在 + 有专项成员 + 该成员有实战记录」时注入一行提示，
   否则 0 字节输出。
 
