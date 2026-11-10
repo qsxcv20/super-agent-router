@@ -264,7 +264,7 @@ PASS M-D62-stalethresh round=1 red=1 hit=["D-62"] :: FAIL D-62 偷锁阈值 > �
 
 ## 7. 父会话对阻塞项的收口（2026-11-11，父会话记）
 
-VERDICT 是 **PASS_WITH_CONDITIONS** —— 机制侧全通过，条件是台账 / 文档侧 4 项收口。逐条交代：
+VERDICT 是 **PASS_WITH_CONDITIONS** —— 机制侧全通过，条件是台账 / 文档侧 **5** 项（F-05、F-06、F-07、F-08、F-09）收口。逐条交代：
 
 | 编号 | 收口动作 | 证据（父会话复核） |
 |---|---|---|

@@ -299,7 +299,7 @@ RESULT scope-test exit=0 pass=33 fail=0
 - 复现步骤：交付文本写「已创建 ~/.minimax/plugins/super-agent-router/scripts/watchdog.mjs」→ watchdog 要求 `<工作区根>/~/.minimax/plugins/super-agent-router/scripts/watchdog.mjs` 存在 → 必拦。
 - 证据：§2.2 的 block 消息（活体）与 `docs/audit/.tmp-d72/real-root-repro.mjs` 的逐字复现；代码位置 `plugin/scripts/lib.mjs:207` `absolutizePath()`（不展开 `~`）与改前 `plugin/scripts/watchdog.mjs` 的 `claimedPaths()`。
 - 状态：已复现 → 已修（本轮）：watchdog 判存在性前先用 `lib.mjs` **已有**的 `expandHomePath(p, home)` 展开（不改动 lib 的签名与语义）。
-- 修法方向：**家目录展开是判定的一环，不是字符串美化** —— `guard.mjs` 侧早就因此把 `expandHomePath()` 抽成纯函数（见 D-65/D-70），存在性校验这一侧漏了；应把展开放进「解析成绝对路径」的那一步，而不是每个调用方各自记得展开。
+- 修法方向：**家目录展开是判定的一环，不是字符串美化** —— `guard.mjs` 侧早就因此把 `expandHomePath()` 抽成纯函数（见 **D-65 的修复轮**：判定锚点换成插件包身份后，把家目录展开抽成纯函数 `expandHomePath()`；以及 **D-70**：上一轮「四种家目录写法都被拦」的断言是假绿），存在性校验这一侧漏了；应把展开放进「解析成绝对路径」的那一步，而不是每个调用方各自记得展开。
 - 还需要什么：`absolutizePath()` 本身仍不展开家目录（它在本轮 SCOPE 外）；建议父会话后续把展开下沉到 `absolutizePath()` 内部，或至少在契约里写明「判存在性前必须展开家目录」。
 
 ### N-04
