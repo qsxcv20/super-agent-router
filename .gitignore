@@ -25,6 +25,7 @@ _*.mjs
 .probe*/
 node_modules_*.md
 _rm*.mjs
+.git-sync-tmp/
 
 # 敏感文件（保险起见）
 .env

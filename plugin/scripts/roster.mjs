@@ -11,9 +11,13 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { readStdin, parseInput } from './lib.mjs';
+import { readRecords, countEntries } from './lessons.mjs';
 
-const MAX_ROSTER = 12;
+// 名录上限。records.mjs 用它判断「截断是否可能发生」：
+// maxMembers >= MAX_ROSTER 时，名录里不可能有成员被名额挤掉。
+export const MAX_ROSTER = 12;
 
 function projectDir() {
   return process.env.MINIMAX_PROJECT_DIR || process.cwd();
@@ -23,11 +27,25 @@ function stateDir() {
   return path.join(projectDir(), '.superagent');
 }
 
-function rosterPath() {
+export function rosterPath() {
   return path.join(stateDir(), 'roster.json');
 }
 
-function readRoster() {
+// 名录的规范顺序 = 名字升序。
+//
+// 为什么名录要有「规范顺序」而不是随便什么顺序：名录顺序曾经被 records.mjs
+// 当成「优先级」用 —— 按名录顺序截断实战记录摘要（D-24），
+// 于是排在第 7 位以后的成员**结构性不可见**：不是因为战绩不够，而是因为位置靠后。
+// 顺序只能是登记顺序，不能是重要性顺序 —— 重要性由 owns 与战绩决定，
+// 不由「排在第几」决定。所以这里把规范顺序固定成名字升序，写在名录自己的模块里，
+// 让「名录顺序」这件事只有一个定义处。
+export function listMembers(roster) {
+  const members = roster && Array.isArray(roster.members) ? roster.members : [];
+  return [...members].sort((a, b) =>
+    String(a.name || '').localeCompare(String(b.name || '')));
+}
+
+export function readRoster() {
   try {
     const r = JSON.parse(fs.readFileSync(rosterPath(), 'utf8'));
     if (!Array.isArray(r.members)) r.members = [];
@@ -109,16 +127,59 @@ function cmdRegister(member) {
   process.exit(0);
 }
 
-const argv = process.argv.slice(2);
-const cmd = argv[0];
-if (cmd === 'reconcile') {
-  const raw = argv[1] ? JSON.parse(argv[1]) : parseInput(readStdin());
-  const list = Array.isArray(raw) ? raw : (raw.agents || []);
-  cmdReconcile(list);
-} else if (cmd === 'register') {
-  const raw = argv[1] ? JSON.parse(argv[1]) : parseInput(readStdin());
-  cmdRegister(raw);
-} else {
-  process.stdout.write('usage: roster.mjs reconcile|register');
-  process.exit(1);
+// 名录一览：每个成员的登记信息 + 战绩 + 教训条数。
+// 让「专项名录」可查 —— 路由依据是这份名录，它不该只能靠手改 JSON 才看得全。
+function cmdList() {
+  const roster = readRoster();
+  const members = listMembers(roster).map((m) => {
+    const recs = readRecords(m.name);
+    return {
+      name: m.name,
+      kind: m.kind || '',
+      source: m.source || '',
+      owns: m.owns || '',
+      accepts: m.accepts || '',
+      reject: m.reject || '',
+      method: m.method || '',
+      records: recs.length,
+      lessons: countEntries(m.name),
+      lastRecord: recs.length ? recs[recs.length - 1].title : ''
+    };
+  });
+  process.stdout.write(JSON.stringify({
+    roster_size: roster.members.length,
+    roster_cap: MAX_ROSTER,
+    members
+  }, null, 2));
+  process.exit(0);
+}
+
+// 判断是否直接运行本文件（而非被 import）。
+// 与 records.mjs 同一个模式：CLI 分支只在直接运行时执行，
+// 否则 import 它的进程会被 exit(0) 干掉（roster 已被 records.mjs 当库 import）。
+function isMain() {
+  try {
+    if (!process.argv[1]) return false;
+    return pathToFileURL(process.argv[1]).href === import.meta.url;
+  } catch {
+    return false;
+  }
+}
+
+if (isMain()) {
+  const argv = process.argv.slice(2);
+  const cmd = argv[0];
+  if (cmd === 'reconcile') {
+    const raw = argv[1] ? JSON.parse(argv[1]) : parseInput(readStdin());
+    const list = Array.isArray(raw) ? raw : (raw.agents || []);
+    cmdReconcile(list);
+  } else if (cmd === 'register') {
+    const raw = argv[1] ? JSON.parse(argv[1]) : parseInput(readStdin());
+    cmdRegister(raw);
+  } else if (cmd === 'list') {
+    cmdList();
+  } else {
+    process.stdout.write('usage: roster.mjs reconcile|register|list');
+    process.exit(1);
+  }
 }

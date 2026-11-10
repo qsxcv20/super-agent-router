@@ -151,3 +151,27 @@ node scripts/lessons-gate.mjs '{
 | 僵尸死 | 建了不用还占名额 | 定期体检 + 退休流程 |
 
 **自我扩张的系统必须同时具备收缩能力。**
+## Router 自己的错题本（v0.5.0）
+
+错题本原本只属于**成员**。但归因表里明写着「Router 给错的 brief 是 Router 的锅」，
+而错题本闸门会**拒绝**这类归因 —— 于是「Router 反复给错边界」这类错误**无处沉淀**，
+只能靠单次记忆。
+
+v0.5.0 起，项目里多一份 `.superagent/lessons/_router.md`：编排层自己的教训。
+它与成员错题本同格式（契约 S1 的 7 字段模板），并由 SessionStart 注入 Router 上下文。
+
+| 谁犯的错 | 记在哪 |
+|---|---|
+| 成员的执行失误 | `.superagent/lessons/<成员名>.md` |
+| **Router 的锅**（brief 给错、边界没列全、模板各写各的） | `.superagent/lessons/_router.md` |
+
+**归因先过 Router 自检**：任何要写进成员错题本的条目，先问一句「这是成员的锅吗」。
+不是 → 别塞进成员账上。
+
+## 履历的验收方必须真实存在（v0.5.0）
+
+原先 `verified_by` 只校验「不等于 agent 名」，等于任何人都能填一个陌生名字写履历，
+而履历会被注入给 Router 当匹配依据 —— 一次伪造就能影响路由。
+
+v0.5.0 起，`record-gate.mjs` 要求 `verified_by` 在派工台账里存在一条
+`agent == verified_by` 且 `state == 'done'` 的记录：确实有个叫这个名字的验收方跑过验收。

@@ -3,6 +3,455 @@
 本文件记录 super-agent-router 插件包的版本变更。
 格式参考 Keep a Changelog，版本号遵循语义化版本。
 
+## [0.5.0] - 2026-11-10
+
+本版把编排机制里的「静默失效」关掉了。
+
+v0.4.0 把越界管控接到了子会话上，但判定链路上仍留着几处「算不出来就放行」的默认分支：
+边界解析不出来、工具名没登记、路径 token 认不出、派工的 SCOPE 条目写不进去、工具载荷解析坏掉 ——
+这些场合旧实现一律 `process.exit(0)`（放行）。静默放行比误拦危险得多：误拦会被看见并修，
+静默放行不会被看见，等于那一整段管控凭空消失。
+
+v0.5.0 把判据写成一份契约（`plugin/skills/super-agent-router/references/contract.md`，S1~S10），
+机制代码按契约实现，brief / 模板 / 验收标准一律**引用**契约，不再各自复述（复述即漂移）。
+
+本版含**破坏性行为变更**，见文末「破坏性变更与升级前检查」。
+
+### 变更 1：scope 支持只读条目 `ro:`
+
+**改了什么**
+
+- `plugin/scripts/lib.mjs` 新增 `READONLY_PREFIX = 'ro:'` 与 `splitScopeEntry()`：SCOPE 条目拆成
+  「可写条目」与「只读条目」两种形态，只读条目统一存成 `ro: <路径>` 字符串 —— 不引入第二套结构，
+  免得出现「一处认为只读、另一处认为可写」的口径漂移。
+- `inScope()` 的写判定遇到 `ro:` 条目直接跳过：只读条目**永不**授予写权限。
+- `scopeClash()` 只比较可写条目：两个 worker 都只读同一个目录，不构成写冲突。
+- SCOPE 行解析接受 `ro: path`（前缀独立成词）与 `ro:path`（连写）两种写法。
+- `plugin/scripts/dispatch.mjs` 的拒绝提示补上只读写法示例。
+
+**为什么**
+
+「能读」与「能写」是两种权限，混在同一条路径列表里没法表达。
+以前想让成员「看这个目录但不许改」，只能给整个目录写权限 —— 成员就此拿到了改权限。
+只读条目不进写冲突检测也是配套的：两个人都只读同一处，本来就不该拦。
+
+**怎么验证**
+
+- 代码位置：`plugin/scripts/lib.mjs` 的 `splitScopeEntry()` / `inScope()`（写判定分支）/ `scopeClash()`。
+- 人工确认：派一个 `SCOPE: ro: plugin/scripts/, docs/audit/report.md` 的工 ——
+  读 `plugin/scripts/guard.mjs` 放行，写同一个文件被拦，写 `docs/audit/report.md` 放行。
+- 仓库回归：`node .superagent/scope-test.mjs`（本版同步更新）。
+
+### 变更 2：通道语义分离，bash 按命令意图分流
+
+**改了什么**
+
+- `plugin/scripts/lib.mjs` 新增通道判定的四件套：`splitCommandTokens()` / `isPathToken()` /
+  `extractPathTokens()` / `isReadOnlyCommand()`，另有 `extractWriteTargets()` / `hasWriteVerb()`
+  用来识别写命令的目标。
+- `plugin/scripts/guard.mjs` 的 bash 分支改为**按命令意图分流**：命中只读命令白名单
+  （`cat` `head` `tail` `less` `more` `ls` `dir` `grep` `rg` `find` `type` `stat` `wc` `which`
+  `node --version` `git status` `git log` `git diff` `git show`）的按**读**判定，其余按**写**判定。
+- 路径 token 的定义收紧为三条之一：含路径分隔符、以 `.` 开头的点目录、含已知文件扩展名。
+  `console.log`、`JSON.stringify`、`v0.4.0` 这类带点的标识符**不再**被当成路径。
+- 目录型目标能被识别：`rm -rf config`、`.git`、`node_modules` 这类不带扩展名的目标，
+  由「动词 + 参数」这一层兜住（`extractWriteTargets()`）。
+
+**为什么**
+
+旧实现只有一个判定口径：有路径就按写判。结果两头都错 ——
+`cat src/x.ts` 被当成写操作（读文件被拦），而 `rm -rf config` 反而因为 `config` 不像路径而被漏掉。
+把「这条命令想干什么」和「这个 token 是不是路径」拆开，两个问题各自用各自的口径解决。
+
+**怎么验证**
+
+- 代码位置：`plugin/scripts/lib.mjs` 的 `isPathToken()`（三条判定规则逐条可见）/ `isReadOnlyCommand()`
+  （白名单）/ `extractWriteTargets()`；`plugin/scripts/guard.mjs` 的 `targetsOf()` 里 bash 分支。
+- 人工确认：worker 执行 `cat plugin/scripts/guard.mjs`（白名单内）应放行；
+  执行 `cat ../../outside.md` 应被拦；执行 `rm -rf some-dir` 应按写判定而不是被当成「无路径」放行。
+- 仓库回归：`node .superagent/guard-test.mjs`（本版同步更新）。
+
+### 变更 3：glob / grep 改按「有效检索根」判定
+
+**改了什么**
+
+- `plugin/scripts/guard.mjs` 新增 `globRoot()`：显式 `path` 优先，缺省用当前工作区。
+  glob / grep / search 的判定对象改成这个有效检索根，**不再是 pattern 本身**。
+
+**为什么**
+
+旧实现拿 pattern 当判定对象，同一个 pattern 在不同 `path` 下会得到相反结论，
+而 `path` 指向目录时反而被拦。判定对象应该是「这次检索实际发生在哪里」。
+
+**怎么验证**
+
+- 代码位置：`plugin/scripts/guard.mjs` 的 `globRoot()` 与 `targetsOf()` 里 glob/grep 分支
+  （`targets: [globRoot()]`）。
+- 人工确认：worker 用 `grep` 在 scope 条目所在目录树内检索应放行；
+  同一 pattern 改成在目录树外检索应被拦。
+- 仓库回归：`node .superagent/scope-test.mjs`、`node .superagent/guard-test.mjs`（本版同步更新）。
+
+### 变更 4：brief 解析兼容两种 transcript 变体，并按语义定位
+
+**改了什么**
+
+- `plugin/scripts/lib.mjs` 的 `readBriefFromTranscript()` 现在同时认两种变体：
+  `compatible`（`type:"user"` + `message.content[].type:"text"`）与
+  `codex`（`type:"response_item"` + `payload.role:"user"` + `payload.content[].type:"input_text"`）。
+- 定位 brief 的方式从固定行号改为**按语义定位**：从文件开头逐行扫描，
+  扫到第一条含 `SCOPE:` 的 user 消息为止。原先的 `slice(0, 8)` 固定窗口已删除 ——
+  会话前置消息条数不固定，扫前几行等于赌。
+
+**为什么**
+
+以前只认 `compatible` 一种变体，遇到另一种形状的 transcript 时解析恒为 null，
+整个越界管控直接失效；固定 8 行窗口则是另一条随机失效路径 ——
+会话前面多几条消息，brief 就落在窗口外。
+
+**怎么验证**
+
+- 代码位置：`plugin/scripts/lib.mjs` 的 `userMessageText()`（两种变体的形状分支）与
+  `readBriefFromTranscript()`（语义定位的扫描循环）。
+- 人工确认：在一个前置消息超过 8 条的会话里派工，worker 仍能正确取到 scope（不再被拦成「无白名单」）。
+- 仓库回归：`node .superagent/e2e-test.mjs`（本版同步更新）。
+
+### 变更 5：解析不到边界 = 拒绝，不再放行（破坏性变更）
+
+**改了什么**
+
+- `plugin/scripts/guard.mjs`：brief 解析失败（变体不认识 / 没找到含 `SCOPE:` 的 user 消息 /
+  transcript 读不到）时**拒绝**，拒绝理由写清具体是哪一种失败。
+- 同理：台账不可读、绑定的 scope 为空、工具载荷解析坏掉 —— 一律拒绝。
+- 旧实现这些场合都是 `process.exit(0)`（放行）。
+
+**为什么**
+
+解析不到边界 = 边界不存在。此时放行等于这个 worker 整段不受越界管控，而且不报错、不留痕 ——
+管控「看起来在工作」，实际已经不在了。
+
+**怎么验证**
+
+- 代码位置：`plugin/scripts/guard.mjs` 中 `if (!brief.ok) deny(...)` 与
+  `if (!binding || !scope.length) deny(...)` 两处（对照 diff 可见旧代码此处为 `process.exit(0)`）。
+- 人工确认：派一个 SCOPE 行写不规范的工，worker 的工具调用应被明确拒绝并给出失败原因，
+  而不是无声通过。
+- 仓库回归：`node .superagent/guard-test.mjs`（本版同步更新）。
+
+### 变更 6：危险操作改按「工具名 + 参数」二维判定
+
+**改了什么**
+
+- `plugin/scripts/guard.mjs` 新增 `dangerousByArgs()`：同一工具名、参数不同，后果完全不同 ——
+  `mavis` 工具的 `command` 为 `agent delete` / `agent update` 时拦截；
+  `miniapp` 的 `action` 为 `publish` 时拦截。
+- 新增 `dangerousInCode()`：复合调用（`run_code`）内部点名危险工具时同样拦截。
+- `plugin/hooks/hooks.json` 的 `PreToolUse` 写类 matcher 由 `write|edit|multiedit|notebookedit|bash`
+  扩为 `write|edit|multiedit|notebookedit|bash|run_code|mavis` ——
+  `mavis` 与 `run_code` 此前不在 matcher 里，这两类调用根本没进过 guard。
+- `plugin/scripts/lib.mjs` 新增 `DANGEROUS_COMMAND`：对外可见的不可逆命令
+  （`git push`、`gh pr create`、`npm publish`、`docker push`、`terraform apply`、`kubectl apply` 等）
+  在 bash 通道按写判定且额外拦截。
+
+**为什么**
+
+以前只按工具名等值匹配。`mavis` 的 `command` 参数空间里就有 `agent delete` / `agent update`，
+因为工具名不是 `mavis_agent_delete` 而整条绕过。删除成员、改成员配置属于账号级不可逆操作，
+必须由用户亲自发起。
+
+**怎么验证**
+
+- 代码位置：`plugin/scripts/guard.mjs` 的 `dangerousByArgs()` / `dangerousInCode()` 与
+  `DANGEROUS` 表；`plugin/hooks/hooks.json` 的 `PreToolUse` 第二个 matcher。
+- 人工确认：在 worker 会话里执行 `mavis` 的 `command = "agent delete ..."`，应被拦；
+  执行 `git push`，应被拦。
+- 注意：`hooks.json` 的 matcher 变更**必须新开会话才生效**，旧会话里这两类调用仍不受 guard 约束。
+- 仓库回归：`node .superagent/hooks-test.mjs`（本版同步更新）。
+
+### 变更 7：未登记的文件类工具名一律按写判定
+
+**改了什么**
+
+- `plugin/scripts/guard.mjs` 新增 `toolKind()`：已登记工具按名分流
+  （写类含 `write` `edit` `multiedit` `notebookedit` `bash` `apply_patch` `patch`；
+  读类含 `read` `glob` `grep` `list` `search` `notebookread`）；
+  明确不碰工作区文件的工具（`web_search` `web_fetch` `task` `think` `todo` `self_reminder`
+  `tool_search` `skill` `ask_user`）不参与判定；
+  **剩下的、名字长得像文件类工具的未登记工具，一律按写判定**。
+- 取不到目标路径时一律拒绝（写类工具拿不到路径，说明载荷形状变了或工具坏了）。
+
+**为什么**
+
+兜底表以前是空的 —— 护栏在最外层开了一道没规则的口子：
+一个新出现的文件类工具名不匹配任何已知名单时，旧实现 `process.exit(0)` 直接放行。
+「不认识」不等于「安全」。
+
+**怎么验证**
+
+- 代码位置：`plugin/scripts/guard.mjs` 的 `toolKind()` 与 `FILE_TOOL_HINT` 正则。
+- 人工确认：worker 调一个未登记但名字像文件操作的工具（如 `my_file_writer`）应被按写判定处理，
+  而不是直接放行。
+- 仓库回归：`node .superagent/guard-test.mjs`（本版同步更新）。
+
+### 变更 8：派工去重键不再只依赖 `turn_id`
+
+**改了什么**
+
+- `plugin/scripts/dispatch.mjs`：去重键由「父会话 + agent + turn_id」改为
+  「父会话 + agent + (`turn_id` || `tool_use_id`)」。
+- 命中已有记录时**只覆盖完全相同的那一条**（原地覆盖，保留 `dispatch_id`）。
+- `turn_id` 与 `tool_use_id` 都拿不到时不去重：宁可多一条记录，也绝不抹掉别的记录。
+
+**为什么**
+
+旧实现只用 `turn_id`。载荷缺该字段时它是空串，而「空串 === 空串」对**所有**历史记录成立 ——
+同一父会话里前一个 worker 的整条记录被抹掉，它的 scope 从台账消失，
+写冲突检测与名额统计同时失真。
+
+**怎么验证**
+
+- 代码位置：`plugin/scripts/dispatch.mjs` 的 `turnKey` 计算与 `existing` 查找分支
+  （对照 diff 可见旧代码的过滤条件会整条抹除记录）。
+- 人工确认：连续派两个 worker 给不同成员，检查台账里两条记录都在，前一个的 scope 没有消失。
+- 仓库回归：`node .superagent/chain-test.mjs`（本版同步更新）。
+
+### 变更 9：在飞名额回收三条路 + 累计派工额度持久化
+
+**改了什么**
+
+- `plugin/scripts/lib.mjs` 新增 `reapExpiredDispatches()`：超过 TTL 仍停在 `active` 的记录判死
+  （`state: 'aborted'`，带 `end_reason`）。
+- `activeDispatches()` / `activeDispatchesAll()` 在**读取时**顺带把超龄记录判死并落盘（读时自愈）。
+- `plugin/scripts/dispatch.mjs` 与 `plugin/scripts/watchdog.mjs` 都在判定前先做 TTL 兜底并写盘。
+- 已判死的记录**不复活**：`markDispatchDone()` / `markDispatchAborted()` 都不会改写非 `active` 记录的状态。
+- 累计派工额度改用持久化计数器（`ledger.counters`），不再靠扫台账统计 ——
+  台账截断到 200 条之后，扫出来的累计数会偏低，30 条上限会形同虚设。
+
+**为什么**
+
+以前只有「worker 正常结束就回收」这一条路。派工被取消、被中断、子会话异常退出时，
+名额在 TTL 内不会被回收 —— 冲突检测与名额统计只增不减，最后把会话自己锁死。
+
+**怎么验证**
+
+- 代码位置：`plugin/scripts/lib.mjs` 的 `reapExpiredDispatches()` / `markDispatchAborted()` /
+  `markDispatchDone()` / `dispatchedTotal()` / `bumpDispatchCounter()`。
+- 人工确认：派一个工后中断该 worker（或让子会话异常退出），
+  检查台账里该记录最终不再是 `active`（判死或已回收）。
+- 仓库回归：`node .superagent/chain-test.mjs`（本版同步更新）。
+
+### 变更 10：履历的验收方必须真实存在
+
+**改了什么**
+
+- `plugin/scripts/record-gate.mjs`：写入实战记录时，`verified_by` 必须能在派工台账里找到一条
+  `agent == verified_by` 且 `state == 'done'` 的记录，否则拒绝写入。
+- 台账为空或不可用时也拒绝 —— 没有台账凭据就没有「确实有人验过」的证据。
+- 校验**只发生在写入时**：历史履历里那些验收方已不在台账中的条目照常读得出、照常注入，
+  闸门不回写、不删除、不重算已有条目。
+
+**为什么**
+
+旧校验只有一条「验收人不能是执行人自己」。任何人都能填一个陌生名字写履历，
+而履历会被注入给 Router 当匹配依据 —— 一次伪造就能影响路由。
+
+**怎么验证**
+
+- 代码位置：`plugin/scripts/record-gate.mjs` 的 `verified_by` 校验分支（台账 `state == 'done'` 判定）。
+- 人工确认：用一个从未派过工的验收方名字写履历，应被拒绝；
+  用确实跑过并已回收为 `done` 的验收方名字，应写入成功。
+- 仓库回归：`node .superagent/records-test.mjs`（本版同步更新）。
+
+### 变更 11：错题本归因按多语序枚举，编排层的锅不进成员账
+
+**改了什么**
+
+- `plugin/scripts/lessons-gate.mjs`：归因公平判定从**按词匹配**改为**按语序枚举** ——
+  「派工 brief 有误」「派工给错」「Router 给错」「给错的 brief」「brief 给错」「brief 有误」
+  「Router 的锅」「编排层的锅」「上游给错」「需求本身自相矛盾」，逐条正则 + 可读标签，
+  命中即拦，并在报错里报出命中的是哪条语序。
+- 两条豁免保留：否定语境（成员在澄清自己背锅）、以及「宾语是成员自己的产物 + brief 处在执行语境」
+  （成员认错，不拦）。
+- 成员的错题本闸门拒绝 `agent` 以 `_` 开头 —— `_router` 是 Router 自己的错题本，
+  用契约 S1 的 7 字段模板，不接受成员格式。
+- `plugin/skills/super-agent-router/SKILL.md` 与 `references/review.md` 写明分工：
+  成员的执行失误记成员账，编排层的错记进 `.superagent/lessons/_router.md`。
+
+**为什么**
+
+按词匹配拦不住语序变化 —— 「给错的 brief」里根本没有「brief 给错」这个子串，换个语序就漏进去；
+而 brief / 派工 / Router 这些词在**成员认错**时同样会出现，按词拦就是把认错也一起拦了。
+
+**怎么验证**
+
+- 代码位置：`plugin/scripts/lessons-gate.mjs` 的 `ROUTER_FAULT_PATTERNS` 数组与 `routerFaultLabel()`。
+- 人工确认：用「给错的 brief」作为根因写成员错题本，应被拒绝并指出命中语序；
+  用「按 brief 做了但没回显口径」作为根因，应允许写入。
+- 仓库回归：`node .superagent/lessons-test.mjs`（本版同步更新）。
+
+### 变更 12：记录摘要取样不再按名录顺序截断，并披露「已显示 N / 共 M」
+
+**改了什么**
+
+- `plugin/scripts/records.mjs` 新增 `summarizeRecordsDetailed()`：先把**有记录的成员全部收齐**
+  （不再按名录顺序提前 break），按「成果条数降序 → 同条数按名字升序」排序后取前 N 名，
+  并把被省略的成员显式披露（`totalMembers` / `shownMembers` / `omitted` / `truncated`）。
+- `plugin/scripts/gate.mjs` 与 `plugin/scripts/session-start.mjs` 的取样名额统一为 12，
+  与名录上限（`MAX_ROSTER = 12`）一致 —— 名录上限 12 时不可能有成员被名额挤掉。
+- 两处注入文本都会写明「已显示 N / 共 M 个有记录的成员」，被省略时列出被省略的成员。
+- `plugin/scripts/roster.mjs` 的名录顺序固定为**名字升序**，并在注释里写明：
+  顺序只能是登记顺序，不能当优先级用。
+
+**为什么**
+
+旧口径是沿名录顺序遍历、凑满名额就 break。排在名录第 7 位以后的成员**结构性不可见** ——
+不是因为战绩不够，而是因为在名录里排得靠后。而且静默截断让注入文本读起来像全集，
+那是在骗 Router。
+
+**怎么验证**
+
+- 代码位置：`plugin/scripts/records.mjs` 的 `summarizeRecordsDetailed()`；
+  `plugin/scripts/gate.mjs` / `plugin/scripts/session-start.mjs` 里的「已显示 N / 共 M」输出行。
+- 人工确认：新会话第一轮的注入文本里应能看到「已显示 N / 共 M 个有记录的成员」这一行。
+- 仓库回归：`node .superagent/records-test.mjs`、`node .superagent/roster-test.mjs`（本版同步更新）。
+
+### 变更 13：成员的教训直接注入 worker 上下文
+
+**改了什么**
+
+- `plugin/scripts/guard.mjs`：worker 建立绑定时，把台账里该成员的错题本条目直接作为
+  `additionalContext` 注入 worker 自己的上下文（此前只挂在父会话的注入文本上）。
+- `plugin/scripts/dispatch.mjs`：派工台账保存该成员的教训条目，供 guard 读取。
+- 教训为空时**显式说明「0 条」**，并区分两种情况 ——
+  「该成员暂无错题本」（还没栽过跟头）与「错题本没送达」（链路故障）处理方式完全不同。
+
+**为什么**
+
+以前教训只挂在父会话的注入文本上，子会话永远收不到，除非 Router 手工抄进 brief ——
+那不是机制保障，是靠自觉。
+
+**怎么验证**
+
+- 代码位置：`plugin/scripts/guard.mjs` 的 `injected` 变量与 `allow(injected)` 调用点；
+  `plugin/scripts/dispatch.mjs` 派工时写台账的 `lessons` / `lesson_count` 字段。
+- 人工确认：给一个错题本里有条目的成员派工，worker 上下文里应能看到该成员的历史教训。
+- 仓库回归：`node .superagent/chain-test.mjs`（本版同步更新）。
+
+### 变更 14：watchdog 按契约校验产出条目
+
+**改了什么**
+
+- `plugin/scripts/lib.mjs` 新增 `validateEntryOutput()` 与 `ENTRY_FIELDS`：
+  「缺陷清单 / 验收结论 / 复盘记录」类产出的编号前缀是否一致、序号是否从 01 递增不跳号、
+  每条 7 个字段是否齐备且独立成行、「条目统计」行是否与实际条数与状态计数自洽。
+- `plugin/scripts/watchdog.mjs`：校验不通过时**一次性说清缺哪一项**（缺哪个字段 / 哪个编号跳号 /
+  统计行对不上），让 worker 一次补齐，而不是反复小修小补。
+- 没有条目型产出时不适用该校验（否则每次普通交付都会被拦）。
+
+**为什么**
+
+产出格式不统一时，验收方要逐条人工核对格式，worker 要来回返工。
+把契约做成程序层校验，格式问题在结束时一次说清。
+
+**怎么验证**
+
+- 代码位置：`plugin/scripts/lib.mjs` 的 `ENTRY_FIELDS` 与 `validateEntryOutput()`；
+  `plugin/scripts/watchdog.mjs` 里的 `entryCheck` 分支。
+- 人工确认：worker 交付一份缺字段的条目型产出，应被 block 并明确指出缺哪一项。
+- 仓库回归：`node .superagent/e2e-test.mjs`（本版同步更新）。
+
+### 变更 15：派工闸门不再静默丢弃解析不出的 SCOPE 条目
+
+**改了什么**
+
+- `plugin/scripts/dispatch.mjs`：SCOPE 行里有「长得像路径却解析不出来」的条目时**拒绝派工**，
+  并列出无法解析的条目。
+- 工具载荷解析失败时**拒绝派工**（此前解析失败会返回空对象，派工无法登记却继续放行）。
+- 台账不可读时**拒绝派工** —— 台账读不出来就没法做冲突与名额判定。
+- `plugin/scripts/guard.mjs`：载荷解析失败时拒绝（此前解析失败取不到 `agent_type`，
+  被当成父会话放行）。
+
+**为什么**
+
+白名单漏收 = 判定范围比派工意图窄 = 窄掉的部分等于无人看管。
+这类失败必须在上报时就被看见，而不是默默生效。
+
+**怎么验证**
+
+- 代码位置：`plugin/scripts/dispatch.mjs` 的 `scopeDetail.rejected` 分支与 `parsed.ok` 分支；
+  `plugin/scripts/guard.mjs` 的 `parsed.ok` 分支。
+- 人工确认：派一个 SCOPE 里写了明显不像路径的条目的工，应被拒绝并指出哪个条目解析不出来。
+- 仓库回归：`node .superagent/scope-test.mjs`（本版同步更新）。
+
+### 变更 16：watchdog 的产出校验改按「可核验的具体物」判定
+
+**改了什么**
+
+- `plugin/scripts/watchdog.mjs`：证据判定由关键词匹配改为具体物匹配 ——
+  真实存在的路径、带行号的引用、围栏里的命令输出才算证据；
+  「测试通过」「运行过了」这类描述词不算证据。
+- 「引用」与「产出」分开：交付说明里被参考 / 引用 / 核对到的路径不参与存在性校验
+  （此前一句「改动 X，参考 Y」会把 Y 也当成声称产出，合规交付被误拦）。
+- 声称产出的文件按绝对路径判存在，盘符路径（`C:/...`）不再被拼成工作区路径。
+- 条款引用（`契约 S2.2`）与纯版本号（`0.4.0`）不再被当成声称产出的文件。
+
+**为什么**
+
+旧实现命中「测试」两个字就放行，「搞定了，测试通过」能完全绕过完成度校验；
+另一头，判定过宽又把正常验收报告里的引用路径当成「声称产出但不存在」，连续拦两次。
+两类误判都会把 worker 逼到反复改写交付说明，把真正该看的内容淹掉。
+
+**怎么验证**
+
+- 代码位置：`plugin/scripts/watchdog.mjs` 的 `evidenceFound()` / `claimedPaths()` /
+  `stripReferenceClauses()`。
+- 人工确认：交付文本写「测试通过」且无具体路径时应被拦；
+  写「改动 plugin/scripts/guard.mjs，参考 plugin/README.md」不应被误拦。
+- 仓库回归：`node .superagent/e2e-test.mjs`（本版同步更新）。
+
+### 变更 17：新增 `references/contract.md` —— 契约单一事实源
+
+**改了什么**
+
+- 新增 `plugin/skills/super-agent-router/references/contract.md`（S1~S10）：
+  条目模板（7 字段）、编号命名空间、scope 语义、通道语义、brief 解析规则、工具分流与危险操作、
+  派工台账口径、记录闸门、收尾契约校验、归因与缺陷台账引用。
+- `plugin/skills/super-agent-router/SKILL.md`、`references/brief.md`、`references/scope.md`、
+  `references/review.md` 改为**引用**契约，不再各自复述字段与规则。
+
+**为什么**
+
+同一个规则在四个文件里各写一遍，迟早漂移 —— 实际发生过给两个 worker 的模板是 6 字段、
+给 verifier 的是 7 字段，验收反过来判产出「字段模板不一致」。
+
+**怎么验证**
+
+- 代码位置：`plugin/skills/super-agent-router/references/contract.md`（全文）；
+  `SKILL.md` 与 `references/brief.md` 里的「见 contract.md」引用句。
+- 人工确认：改契约里的一个字段定义，brief.md / scope.md / review.md 里不应再出现该字段的复述。
+
+### 破坏性变更与升级前检查
+
+以下四项会改变现有用法。**升级前请逐条检查**，否则会出现「以前能跑、升级后被拦」的情况。
+
+1. **brief 解析不到边界 = 拒绝**（变更 5）。
+   旧 brief 写法若解析不出 SCOPE，worker 会被拒绝操作，不再是无声放行。
+   - 升级前检查：所有在用的派工 brief 是否都含一行可解析的 `SCOPE:` 路径清单；
+     路径条目必须是规范路径（不能是「不要动生产配置」这类否定式表述）。
+2. **通道判定变严**（变更 2 / 3 / 7）。
+   bash 现在按命令意图分流，glob/grep 改按有效检索根判定，未登记的文件类工具名一律按写判定。
+   - 升级前检查：worker 脚本里是否有依赖「bash 里带点的东西不算路径」的写法；
+     是否有对目录树外做 glob/grep 的步骤需要补进 scope。
+3. **履历的验收方必须真实存在**（变更 10）。
+   `verified_by` 必须在派工台账里有 `state == 'done'` 的记录才能写入。
+   - 升级前检查：现有的履历写入流程是否走真实派工验收；
+     填陌生名字写履历的写法从本版起会被拒绝（历史条目不受影响，仍可读）。
+4. **编排层归因不再能写进成员错题本**（变更 11）。
+   - 升级前检查：成员错题本里若有「Router 给错的 brief」这类归因，迁到
+     `.superagent/lessons/_router.md`（该文件用契约 S1 的 7 字段模板）。
+
+另外一条**运行时要求**：`plugin/hooks/hooks.json` 的 `PreToolUse` matcher 本版新增了
+`run_code|mavis`，**必须新开会话才生效**。旧会话里 `mavis` 与 `run_code` 两类调用仍不进 guard。
+
 ## [0.4.0] - 2026-11-09
 
 本次升级修正了「派工发生在父会话、工具执行发生在子会话」这一事实与 v0.3.x 授权模型之间的错配。

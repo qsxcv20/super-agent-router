@@ -3,3 +3,5 @@
 2026-11-09T12:48:07.217Z | register | sa-plugin-release | 把插件包升到 v0.4.0 并补齐发布说明
 2026-11-09T14:47:48.891Z | register | sa-orchestration-audit | 审计 v0.4.0 编排机制的缺陷，为 v0.5.0 提供实证输入
 2026-11-09T14:47:48.955Z | register | sa-context-trace | 评估同组成员是否需要共享上下文，为 v0.5.0 提供事实依据
+2026-11-10T00:08:44.564Z | register | sa-mechanism-fix | 按缺陷台账 D- 编号改造 v0.4.0 的边界判定，发布 v0.5.0
+2026-11-10T00:08:44.614Z | register | sa-gate-integrity | 按缺陷台账 D- 编号改造 v0.4.0 的记录闸门，发布 v0.5.0

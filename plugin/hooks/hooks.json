@@ -37,7 +37,7 @@
         ]
       },
       {
-        "matcher": "write|edit|multiedit|notebookedit|bash",
+        "matcher": "write|edit|multiedit|notebookedit|bash|run_code|mavis",
         "hooks": [
           {
             "type": "command",

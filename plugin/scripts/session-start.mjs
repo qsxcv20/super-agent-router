@@ -11,7 +11,7 @@
 // 注入内容必须短。只放「什么时候该编排 + 怎么开始」，
 // 详细的协议放在 skill 里，让模型按需加载。
 import { readStdin, parseInput } from './lib.mjs';
-import { summarizeRecords } from './records.mjs';
+import { summarizeRecordsDetailed } from './records.mjs';
 
 const input = parseInput(readStdin());
 
@@ -32,11 +32,15 @@ lines.push('5. 派工后必须由独立 verifier 验收，worker 自述完成不
 lines.push('6. 验收通过后用 record-gate.mjs 给该成员记一条实战记录');
 lines.push('');
 lines.push('默认成员数 = 0。改 typo、查 API、单点小改一律直做，不要为了用编排而用编排。');
+lines.push('（UserPromptSubmit 的粗筛可能漏判。若你判断这轮该走编排流程，直接读本 skill 的协议，不要等注入提醒。）');
 lines.push('');
 lines.push('完整协议见 skill: super-agent-router（references/ 下有 teams / routing / brief / bootstrap / review / records / scope）。');
 
 // 实战记录摘要：让模型一开始就知道谁做成过什么
-const summaries = summarizeRecords(3, 6);
+// 名额口径与 records.mjs 默认值统一，并取 maxMembers >= MAX_ROSTER(12)（契约 S7.3 / D-24）。
+// 排序口径直接沿用 records.mjs 的取样结果，不另起一套。
+const summary = summarizeRecordsDetailed(3, 12);
+const summaries = summary.members;
 if (summaries.length) {
   lines.push('');
   lines.push('【当前专项成员的实战记录（匹配参考）】');
@@ -45,6 +49,10 @@ if (summaries.length) {
     for (const r of s.records) {
       lines.push('  · ' + r.title + (r.approach ? ' —— ' + r.approach : ''));
     }
+  }
+  lines.push('已显示 ' + summary.shownMembers + ' / 共 ' + summary.totalMembers + ' 个有记录的成员。');
+  if (summary.truncated) {
+    lines.push('被名额省略的成员：' + summary.omitted.join('、') + '（名录上限 ' + summary.rosterCap + '）。');
   }
   lines.push('注意：这些只作参考。归属仍以 roster.json 的 owns 为准。');
 }

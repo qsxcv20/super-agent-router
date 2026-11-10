@@ -56,5 +56,18 @@ const g = spawnSync('node', [path.join(ROOT, 'scripts', 'gate.mjs')], {
 });
 ok('普通提问仍静默放行', (g.stdout||'').trim() === '', JSON.stringify(g.stdout||'').slice(0,80));
 
+// 5. matcher 覆盖面：guard 只看得到被 matcher 命中的工具（D-03）
+{
+  const groups = h.PreToolUse || [];
+  const writeGroup = groups.find((g) => g.matcher && /write\|edit/.test(g.matcher));
+  const readGroup = groups.find((g) => g.matcher && /read\|glob/.test(g.matcher));
+  const dangerGroup = groups.find((g) => g.matcher && /mavis_agent_delete/.test(g.matcher));
+  ok('写类 matcher 覆盖 bash', !!writeGroup && /bash/.test(writeGroup.matcher), writeGroup ? writeGroup.matcher : '');
+  ok('写类 matcher 覆盖 run_code（复合工具）', !!writeGroup && /run_code/.test(writeGroup.matcher), writeGroup ? writeGroup.matcher : '');
+  ok('写类 matcher 覆盖 mavis（参数维度危险判定）', !!writeGroup && /\bmavis\b/.test(writeGroup.matcher), writeGroup ? writeGroup.matcher : '');
+  ok('读类 matcher 覆盖 glob/grep', !!readGroup && /glob/.test(readGroup.matcher) && /grep/.test(readGroup.matcher), readGroup ? readGroup.matcher : '');
+  ok('危险 matcher 覆盖删除/部署/发布', !!dangerGroup && /mavis_agent_delete/.test(dangerGroup.matcher) && /website_deploy/.test(dangerGroup.matcher) && /miniapp/.test(dangerGroup.matcher), dangerGroup ? dangerGroup.matcher : '');
+}
+
 console.log(fail === 0 ? '>>> HOOKS ALL PASS' : '>>> HOOKS FAILURES: ' + fail);
 process.exit(fail ? 1 : 0);

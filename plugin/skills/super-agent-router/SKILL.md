@@ -92,7 +92,7 @@ EVIDENCE: 交付时必须附上的证据（文件路径/命令/验证方式）
 字段缺失时插件的 `PreToolUse` 会拦截越界写入。scope 必须是**具体路径清单**，
 不能只写「不要动生产配置」这种否定式。
 
-模板见 `references/brief.md`。
+模板见 `references/brief.md`。条目模板、编号规则、scope 与通道语义以 `references/contract.md` 为**唯一事实源** —— brief 只引用，不复述。
 
 ## 4. 验收（Watchdog）
 
@@ -141,7 +141,7 @@ Watchdog 分两层，**职责不可互换**：
 你必须把相关规则写进 brief 的 `PRIOR_LESSONS` 段 —— 让 Worker 开工前就知道
 上次同类任务栽在哪儿。**只记不读 = 没进化。**
 错题本准入：越界 / 数据错误 / 交付缺失 / 不可逆 四类，
-或同型错误重复 ≥2 次。归因要公平——Router 给错的 brief 是 Router 的锅。
+或同型错误重复 ≥2 次。归因要公平——Router 给错的 brief 是 Router 的锅。Router 自己的错记进 `.superagent/lessons/_router.md`（编排层错题本），不塞进成员账上。
 每个成员有效规则 ≤15 条，超了先合并淘汰旧的。
 
 ### 6.2 验收通过后记一条实战记录（履历）
@@ -182,3 +182,4 @@ node scripts/record-gate.mjs '{
 - `references/bootstrap.md` — 新专项成员的方法论与验收清单模板
 - `references/review.md` — 复盘归因表、错题本格式、体检清单
 - `references/records.md` — 实战记录（履历）格式与闭环
+- `references/contract.md` — **契约单一事实源**：条目模板、编号命名空间、scope 语义、通道语义、台账口径

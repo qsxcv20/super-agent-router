@@ -1,9 +1,23 @@
+// 专项名录（roster）回归测试
+// 用法：node .superagent/roster-test.mjs
+//   默认跑安装副本；跑仓库副本请显式指定：
+//   $env:SAR_PLUGIN_ROOT='<repo>/plugin'; node .superagent\roster-test.mjs
+//
+// 验证这些事：
+//   1. 未写方法论文件 → 拒绝登记
+//   2. 有方法论文件 → 登记成功、落盘、changes.log 留痕
+//   3. 重复登记 / 泛词命名 / 撞内置名 / 缺 owns → 各自被拒
+//   4. reconcile：adopt / reuse / stale 三种关系都识别得出
+//   5. list：名录一览可查（名字升序 + 战绩/教训条数）
+//   6. roster.mjs 可当库 import（import 不执行 CLI，否则会把 import 它的进程 exit 掉）
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
-const PLUGIN_ROOT = 'C:\\Users\\yang2\\.minimax\\plugins\\super-agent-router';
+const PLUGIN_ROOT = process.env.SAR_PLUGIN_ROOT ||
+  'C:\\Users\\yang2\\.minimax\\plugins\\super-agent-router';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sar-roster-'));
 const PROJ = path.join(tmp, 'proj');
 fs.mkdirSync(path.join(PROJ, '.superagent', 'methods'), { recursive: true });
@@ -51,7 +65,7 @@ fs.writeFileSync(path.join(PROJ, '.superagent', 'methods', 'sa-spreadsheet-extra
   ok('changes.log 留痕', fs.readFileSync(path.join(PROJ, '.superagent', 'changes.log'), 'utf8').includes('sa-spreadsheet-extract'));
 }
 
-// 4. 重复登记同�� → 应拒绝
+// 4. 重复登记同名 → 应拒绝
 {
   const r = roster(['register', JSON.stringify(MEMBER)]);
   ok('重复登记被拒', r.ok === false && String(r.errors).includes('已存在'), JSON.stringify(r.errors));
@@ -91,6 +105,30 @@ fs.writeFileSync(path.join(PROJ, '.superagent', 'methods', 'sa-spreadsheet-extra
 {
   const r = roster(['reconcile', JSON.stringify([{ name: 'explore' }, { name: 'worker' }, { name: 'verifier' }])]);
   ok('reconcile 识别陈旧成员', Array.isArray(r.stale) && r.stale.includes('sa-spreadsheet-extract'), JSON.stringify(r));
+}
+
+// 10. list：名录一览可查 —— 名字升序（规范顺序）+ 每人的战绩/教训条数
+{
+  const r = roster(['list']);
+  ok('list 命令可用', Array.isArray(r.members), JSON.stringify(r).slice(0, 160));
+  const names = (r.members || []).map(m => m.name);
+  const sorted = [...names].sort();
+  ok('名录按名字升序（规范顺序）', JSON.stringify(names) === JSON.stringify(sorted), names.join(','));
+  ok('list 给出战绩条数与教训条数',
+    (r.members || []).every(m => typeof m.records === 'number' && typeof m.lessons === 'number'),
+    JSON.stringify((r.members || [])[0]));
+}
+
+// 11. roster.mjs 可当库 import：import 不执行 CLI
+// （records.mjs 要用它；CLI 若在 import 时跑，会把 import 它的进程 exit 掉）
+{
+  const mod = await import(pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'roster.mjs')).href);
+  ok('roster.mjs 可当库 import（isMain 守卫生效）',
+    typeof mod.readRoster === 'function' && typeof mod.listMembers === 'function' && typeof mod.rosterPath === 'function',
+    '');
+  ok('名录上限常量已导出', mod.MAX_ROSTER === 12, String(mod.MAX_ROSTER));
+  const members = mod.listMembers({ members: [{ name: 'sa-b' }, { name: 'sa-a' }] });
+  ok('listMembers 返回名字升序', members.map(m => m.name).join(',') === 'sa-a,sa-b', members.map(m => m.name).join(','));
 }
 
 console.log(fail === 0 ? '>>> ROSTER ALL PASS' : '>>> ROSTER FAILURES: ' + fail);

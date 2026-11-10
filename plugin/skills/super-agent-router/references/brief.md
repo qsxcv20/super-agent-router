@@ -89,3 +89,40 @@ EVIDENCE:
 PRIOR_LESSONS:
 - 改连接清理逻辑前必须先确认异常路径下的 finally 块存在
 ```
+## 派工前的边界自检三连（v0.5.0）
+
+派工前必查这三件事，否则成员会反复撞墙：
+
+1. **读得到吗** —— 把成员要读的每个路径列出来，逐个确认它落在某个 scope 条目的
+   所在目录树内。漏一个 = 成员必然撞越界拦截。
+2. **说得准吗** —— brief 里每句关于边界的描述（「整个目录可读」「只有 X 能写」），
+   必须与 `references/contract.md` 的通道语义一致。**半真话比不说更危险**：
+   曾有一位成员撞墙 40 分钟，根因就是 brief 写「整个目录可读」，
+   而 bash 通道实际按「写」判定。
+3. **同源吗** —— 条目模板、编号规则、状态口径一律直接引用
+   `references/contract.md`，**不要在 brief 里复述**。复述即漂移：
+   曾给两个 worker 的模板是 6 字段、给 verifier 的是 7 字段，
+   验收反过来判产出「字段模板不一致」。
+
+## 只读条目
+
+想让成员读一个目录、但不给它写权限，用 `ro:` 前缀：
+
+```
+SCOPE: ro: plugin/scripts/, docs/audit/report.md
+```
+
+`ro:` 条目按所在目录树放行读、永不授予写、不参与派工的写冲突检测。
+完整语义见 `references/contract.md` 的 S2。
+
+## brief 是 worker 唯一的协议载体
+
+子会话**不触发** `SessionStart` 与 `UserPromptSubmit`（见 `references/scope.md`），
+所以「SessionStart 自动注入编排协议」只对 Router 生效。worker 看到的只有你写的 brief。
+brief 缺一条，worker 就少一条依据——目标、边界、验收标准、交付要求，一个都不能省。
+
+## 产出契约
+
+缺陷清单、验收结论、复盘记录这类产出，一律使用 `references/contract.md` S1 的
+7 字段模板与编号命名空间。brief 里只需写「条目模板见 contract.md S1」，
+**不要把字段抄一遍**。

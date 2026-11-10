@@ -8,6 +8,9 @@
 - 派工没写 SCOPE 白名单 → 直接拒绝派发。
 - Worker 想改白名单外的文件 → 越界拦截，工具调用当场被 deny。
 - Worker 声称做完却拿不出证据 → 交付被拦一次，要求补证据。
+- Worker 的边界算不出来 → **拒绝**，不是放行。
+
+当前版本：**v0.5.0**。
 
 ## 装在哪
 
@@ -37,6 +40,7 @@ ${PLUGIN_DATA}/dispatches.json  派工台账
 .superagent/roster.json          专项名录（归属的唯一依据）
 .superagent/methods/<成员名>.md  成员方法论 + 实战记录
 .superagent/lessons/<成员名>.md  成员错题本
+.superagent/lessons/_router.md   Router 自己的错题本（编排层的锅记这里）
 ```
 
 ## 怎么装
@@ -55,6 +59,10 @@ ${PLUGIN_DATA}/dispatches.json  派工台账
    > **Hook 是按会话激活的。** `SessionStart` 只在新会话或真正恢复的 Hook 会话触发。
    > 安装/升级后不新开会话，Hook 不会跑 —— 这是「装完没反应」最常见的原因，
    > 不是安装失败。
+   >
+   > **v0.5.0 尤其要注意这条**：本版给 `PreToolUse` 的 matcher 加了 `run_code` 与 `mavis`，
+   > 新增的匹配项**只在新会话里生效**。老会话里，`mavis`（含 `agent delete` / `agent update`）
+   > 和 `run_code` 这两类调用仍然不会进越界拦截。
 
 3. 确认 Node.js 可用（Hook 脚本用 `node` 执行）：
 
@@ -122,6 +130,7 @@ Get-ChildItem -Path "$env:USERPROFILE/.minimax" -Filter dispatches.json -Recurse
 
 最高频原因。Hook 按会话激活，安装/升级后必须新开一个会话。
 先新开会话再重测，这一步能解决大部分「没反应」。
+v0.5.0 换了 `hooks.json` 的 matcher，**不新开会话就等于没升级**。
 
 ### 2. 插件目录放对了吗？
 
@@ -151,7 +160,7 @@ Hook 拦不住越界，最常见的原因是派工时没给可判定的白名单
 - ❌ `SCOPE: 不要动生产配置` —— 否定式禁令，程序无法判定，直接不算 scope
 - ❌ 只写目录不带 `/` —— 会被当成单个文件，其下的文件全部拦掉
 
-记不住格式就看 `references/brief.md`。
+记不住格式就看插件包里的 `references/brief.md`。
 
 ### 5. 是不是 Router 自己被拦了？（v0.4.0 已修）
 
@@ -165,12 +174,12 @@ worker 的 scope 改从它自己 transcript 的派工原文解析。
 
 ### 6. 派工被「组队冲突」或「派工超限」拒绝？
 
-这是 v0.4.0 新增的组队闸门在正常工作，不是故障：
+这是组队闸门在正常工作，不是故障：
 
-- **组队冲突** —— 本次 SCOPE 与本会话仍在飞的派工重叠。要么等它结束再派，要么把范围拆开。
+- **组队冲突** —— 本次 SCOPE 与仍在飞的派工重叠。要么等它结束再派，要么把范围拆开。
 - **派工超限** —— 并发在飞上限 6 个、累计上限 30 个。说明任务没拆干净，或者在用派工代替思考。
 
-两个闸门都只算**写冲突**，读范围天然重叠不会被拦。
+两个闸门都只算**写冲突**，读范围天然重叠不会被拦 —— 只读条目（`ro:`）也永远不构成写冲突。
 
 ### 7. 插件在设置里被禁用了吗？
 
@@ -183,6 +192,85 @@ worker 的 scope 改从它自己 transcript 的派工原文解析。
 - 目录 scope 必须以 `/` 结尾才涵盖其下所有文件；写成 `src/app` 时，
   `src/app/sub/x.ts` 会被拦。
 - 读操作比写宽松：允许读 scope 所在目录树（读邻近文件理解上下文是正当的）。
+- 派工用 `ro:` 条目时，读放行、写照拦 —— 这是设计，不是误判。
+
+### 9. Worker 报「解析不到边界」被拒绝？
+
+v0.5.0 起，worker 的 scope 来自它自己 transcript 里的派工原文；解析不出来时**一律拒绝**，
+不再放行。看到这条说明派工原文有问题：
+
+- brief 里必须有一行可解析的 `SCOPE:` 清单
+- 路径要写成规范路径，别用否定式表述
+- 派工的内容要确实进了 worker 的 transcript
+
+## 只读条目 `ro:`：想让它读，但不想让它改
+
+同一个 SCOPE 清单里，两种条目可以混着用：
+
+```text
+SCOPE: ro: plugin/scripts/, docs/audit/report.md
+```
+
+含义是：
+
+| 条目 | 能读 | 能写 |
+|---|---|---|
+| `ro: plugin/scripts/` | ✅ 该目录树下所有文件 | ❌ 一律拦 |
+| `docs/audit/report.md` | ✅ | ✅（仅这一个文件） |
+
+写法上 `ro: path` 与 `ro:path` 都认；目录条目仍要带结尾的 `/` 才涵盖其下所有文件。
+
+两条配套规则：
+
+- `ro:` 条目**永不**授予写权限 —— 写同一个文件也会被拦。
+- `ro:` 条目**不参与**派工的写冲突检测 —— 两个人都只读同一个目录不算冲突。
+
+## brief 是 worker 唯一的协议载体
+
+这条是运行时事实，不是什么设计偏好：
+
+> `plugin/hooks/hooks.json` 声明的 Hook 全部挂在**父会话（Router）**的事件流上。
+> **子会话不会触发 `SessionStart`，也不会触发 `UserPromptSubmit`。**
+> 没有对应事件可挂，代码层面关不掉。
+
+所以「会话开始自动注入编排协议」这件事**只对 Router 生效**。对 worker 来说：
+
+| worker 需要的东西 | 怎么到达 |
+|---|---|
+| 编排协议要点 | **随 brief 走** —— Router 在 brief 里写清，别指望 hook 自动注入 |
+| 派工白名单（SCOPE） | brief 正文 + 子会话 transcript |
+| 该成员的历史教训 | 机制直接注入 worker 上下文（v0.5.0 起，不再只挂父会话） |
+| 该成员的实战记录 | 派工时随注入文本给出（匹配阶段给 Router 参考） |
+
+结论：**brief 少写一条，worker 就少一条依据。**
+目标、边界、验收标准、交付要求，一条都不能省。
+
+## v0.5.0 的破坏性变更
+
+以下四项会改变现有用法。升级前请逐条检查，避免「以前能跑、升级后被拦」。
+
+1. **解析不到边界 = 拒绝（不再放行）。**
+   旧 brief 写法若解析不出 SCOPE，worker 会被拒绝操作。
+   - 检查：所有在用的派工 brief 是否都含一行可解析的 `SCOPE:` 路径清单。
+
+2. **通道判定变严。**
+   bash 现在按**命令意图**分流（只读命令按读判定，其余按写判定）；
+   glob / grep 改按**有效检索根**判定；未登记的文件类工具名一律按**写**判定。
+   - 检查：worker 脚本里是否有依赖「bash 里带点的东西不算路径」的写法；
+     是否有对目录树外做 glob/grep 的步骤需要补进 scope。
+
+3. **履历的验收方必须真实存在。**
+   写实战记录时，`verified_by` 必须在派工台账里有一条 `state = done` 的记录。
+   填一个陌生名字写履历会被拒绝。
+   - 检查：现有履历写入流程是否走真实派工验收。
+   - 历史履历不受影响：闸门只在**写入时**校验，读取时不管历史记录。
+
+4. **编排层的归因不再写进成员错题本。**
+   「brief 给错」「派工给错」「Router 的锅」这类归因会被错题本闸门退回来，
+   改记进 `.superagent/lessons/_router.md`（用契约的 7 字段条目模板）。
+   - 检查：成员错题本里若有这样的归因，迁到 `_router.md`。
+
+另有一条运行时要求：**`hooks.json` 的 matcher 变了，必须新开会话才生效**（见上面排查第 1 条）。
 
 ## 它管什么、不管什么
 
@@ -190,7 +278,8 @@ worker 的 scope 改从它自己 transcript 的派工原文解析。
 |---|---|
 | **写** `write` `edit` `multiedit` `notebookedit` `bash` | 严格：必须精确落在白名单内，否则拦 |
 | **读** `read` `glob` `grep` `list` `search` | 宽松：允许读 scope 所在目录树 |
-| **危险** `mavis_agent_delete` `mavis_agent_update` `website_deploy` `miniapp` / `miniapp_publish` | 子代理会话里一律拦：账号级或对外可见的不可逆动作，必须由你亲自发起。Router 父会话（你本人）不受此拦 |
+| **复合** `run_code` | 只判危险操作（代码里夹带的 `mavis agent delete` / `website_deploy` 等一律拦）；不扫代码文本里的路径，作用域交回内层调用：每个内层写/读调用各自触发 PreToolUse 重新判定 |
+| **危险** `mavis_agent_delete` `mavis_agent_update` `website_deploy` `miniapp` / `miniapp_publish`，以及 `mavis` 的 `agent delete` / `agent update`、`miniapp` 的 `publish` | 子代理会话里一律拦：账号级或对外可见的不可逆动作，必须由你亲自发起。Router 父会话（你本人）不受此拦 |
 
 三条硬边界：
 

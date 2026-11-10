@@ -313,3 +313,190 @@
 建议顺序：① 先清 P0 的 5 条静默放行（边界不报错 = 边界不存在）；② 再修 P1 中让「教训前置」真正生效的那条（CF-03）与让履历不可伪造的那条（RG-11）；③ 契约层统一为单一事实源（模板、编号命名空间、验收标准与产出标准必须同源）；④ P2 逐条消噪。
 
 **未验证项**：所有「已复现」均为静态推演 + 活体探针，未实跑被审计脚本；安装目录与运行时缓存副本与仓库副本已比对确认逐字节一致（11/11 脚本），故「审计对象 ≠ 运行时对象」这一残留风险已排除。
+---
+
+### D-25
+- 触发条件：worker 在 bash 命令里夹带账号级或对外可见的不可逆动作，且命令里**同时**含一个 scope 内的路径 token（让「取不到目标即 deny」这条规则不生效）。典型命令：`echo x >> .superagent/STATUS.md && mavis agent delete sa-victim`。
+- 影响：**worker 可以绕过护栏删除账号级成员**（`mavis agent delete`）、改写成员（`mavis agent update`）、触发部署或 Mini App 发布。`mavis` 是本机真实存在的 CLI，命令文本会被 shell 真的执行 —— 这不是理论风险，是可执行的账号级不可逆动作。根因：`lib.mjs` 的 `DANGEROUS_COMMAND` 只覆盖固定几个对外命令（`git push`/`npm publish`/`docker push`/`terraform apply`/`kubectl apply`/`gh pr create`），不含账号级动作；而 `guard.mjs` 的 `dangerousByArgs` 只按**工具名 + 参数**判定（`mavis` 工具、`miniapp` 工具），bash 是自由文本命令，走不到那条分支。
+- 复现步骤：用假 `PLUGIN_DATA` + 真 transcript 驱动**仓库版** `plugin/scripts/guard.mjs`（scope = `.superagent/STATUS.md`），喂合成 PreToolUse 载荷：① `bash` + `command="echo x >> .superagent/STATUS.md && mavis agent delete sa-victim"` → **ALLOW**；② `bash` + `command="mavis agent delete sa-victim"`（无路径 token）→ **ALLOW**；③ 对照组 `bash` + `command="echo x >> .superagent/STATUS.md && git push"` → **DENY**（`DANGEROUS_COMMAND` 生效）；④ `bash` + `mavis agent update` → **ALLOW**；⑤ `bash` + `website_deploy` → **ALLOW**；⑥ `bash` + 普通命令 `echo x >> .superagent/STATUS.md` → **ALLOW**（对照组，必须仍然放行）。
+- 证据：活体探针输出逐行 —— `PROBE|P1-bash-in-scope-plus-agent-delete|ALLOW`、`PROBE|P2-bash-agent-delete-only|ALLOW`、`PROBE|P3-bash-in-scope-plus-git-push|DENY`、`PROBE|P4-bash-in-scope-plus-agent-update|ALLOW`、`PROBE|P5-bash-in-scope-plus-website-deploy|ALLOW`、`PROBE|P6-runcode-agent-delete|DENY`、`PROBE|P7-bash-in-scope-harmless|ALLOW`。探针工装：`C:/Users/yang2/AppData/Local/Temp/sar-probe-bash/probe.mjs`（假 PLUGIN_DATA + 真 transcript，驱动仓库版 guard）。**注意 P6**：机制层的复合判定对同一动作是 DENY 的 —— 判定逻辑本身没错，是**触发链路**没走到（见 D-26）。
+- 状态：已复现
+- 修法方向：bash 通道的危险判定必须按**命令形态**识别（CLI + 子命令 + 动作，如 `mavis agent delete|update`），不能用「见到 delete 就拦」这种词匹配 —— 那会误伤 `rm build/out.txt` 这类普通路径操作；同时必须保留只读命令分流（`ls`/`cat`/`git log` 仍按读判定）。契约侧已在 S3 新增「bash 通道的危险操作形态」条款、S5.3 补「同一份清单必须在 bash 通道同样生效」。
+- 还需要什么：无 —— 复现不依赖平台派发行为，纯机制层即可判定。
+- 来源：v0.5.0 独立复验收尾时的运行时取证 ｜ 严重度：P0 ｜ 归属层：机制层
+
+### D-26
+- 触发条件：平台对 `run_code` 这类**容器调用**不派发 PreToolUse 事件；worker 的主力工具又是 `run_code`（PTC 容器调用）。
+- 影响：**v0.5.0 的复合层判定在真实运行时不会被触发** —— 它成了预留防线而不是生效防线。任何指望复合层兜底的判断都会落空（这正是 D-25 的成因：复合层能识别 `agent delete`，但没人调用它）。同时，「加一个工具名进 matcher」这种做法在本运行时**不产生任何效果**，属于会误导后人的假门。
+- 复现步骤：1) 给活动 hook 树的 `scripts/guard.mjs` 装一行临时日志（把 `readStdin()` 收到的原始载荷追加到日志文件），并同步到安装副本（运行时从安装副本物化新树）；2) 开一个新子会话，只做一次 `run_code` 调用（`return { probe: 'container-dispatch-check', n: 1 + 1 }`）与一次 `read` 调用；3) 读日志：**只有 `read` 有条目，外层 `run_code` 没有任何条目**；4) 全库统计（`local_runtime_message_rows` 的 tool_calls）：1640 次 `run_code` 调用中，护栏**直接拒答 0 次**；同期内层子调用被拒 153 次；对照组 `bash` 被直接拒答 114 次、`read` 42 次、`grep` 31 次、`glob` 21 次。
+- 证据：探针日志 `C:/Users/yang2/AppData/Local/Temp/sar-hook-log.jsonl` 条目分布 = `write 1 / bash 2 / read 1`，**无 run_code**（其中 read 条目来自探针子会话的容器内子调用，证明日志探针在该会话内正常工作）；全库统计口径见上（脚本 `C:/Users/yang2/AppData/Local/Temp/sar-blocked-scan3.py`）。探针已还原：安装副本与两棵活动树的 `guard.mjs` 均与仓库逐字节一致（sha256 前缀 `7f4e24732fa3`）。
+- 状态：已复现
+- 修法方向：**不能靠改代码解决**（这是平台事件结构事实）。处置：(1) 危险操作与作用域的判定必须落在**内层通道**（见 D-25 的修法）；(2) `plugin/hooks/hooks.json` 里的 `run_code` matcher 条目**保留**（平台行为变化后即生效），但文档必须写明它当前不生效 —— 已在契约 S3 新增「容器调用的派发事实」、`references/scope.md` 复合工具章节加注；(3) `mavis` 条目保留 —— 它是普通工具调用，实测同会话内 `read` 等普通工具**确实**被派发并判定。
+- 还需要什么：需要平台侧确认 —— `run_code` 这类容器调用是否会改为派发 PreToolUse；若会，载荷里的代码字段名是什么（当前机制读 `tool_input.code` / `program` / `script`）。这属于平台侧问题，本插件无法自行决定。
+- 来源：v0.5.0 独立复验收尾时的运行时取证 ｜ 严重度：P1 ｜ 归属层：运行时事实（机制层按此调整落点）
+
+### D-25b
+- 触发条件：bash 命令用**带布尔开关的包装器**执行危险动作 —— `sudo -n mavis agent delete sa-x`、`env -i mavis agent delete sa-x`、`timeout 5 mavis agent delete sa-x`、`powershell -Command mavis agent delete sa-x`（未加引号）。
+- 影响：D-25 的洞没被完全堵住 —— 这四条形态仍然 **ALLOW**，账号级成员删除可经包装器绕过。根因三处：① `lib.mjs` 的 `WRAPPER_VALUE_FLAGS` 把 `-n/-i/-e/-l/-s/-h/-d/-o` 一律当「带独立取值的开关」吞掉后一个 token，而 `sudo -n`、`env -i` 是**布尔开关不带值** —— 真正的命令词（`mavis`）被吞掉，命令位置找不到它；② `COMMAND_WRAPPERS` 是闭集，漏了 `timeout`、`powershell`/`pwsh`、`cmd /c`、`stdbuf`、`ionice` 等；③ `powershell -Command` 后面的整段没有被当作内层命令再判一次。
+- 复现步骤：用假 PLUGIN_DATA + 真 transcript 驱动仓库版 guard（scope = `.superagent/STATUS.md`），喂上述四条合成 bash 载荷 → 观察 verdict 为 ALLOW（应为 DENY）。
+- 证据：独立 verifier 复验（D-25 收窄单）实测：`sudo -n mavis agent delete sa-x`、`env -i mavis agent delete sa-x`、`timeout 5 mavis agent delete sa-x`、`powershell -Command mavis agent delete sa-x` 全部 ALLOW。对照：同一轮里 `sudo mavis agent delete`（无开关）、`env FOO=1 mavis agent delete`、`sh -c "mavis agent delete"`、`cat $(mavis agent delete)` 等 10 条包装形态全部 DENY。verifier 另注：`sudo`/`env`/`timeout`/`powershell` 在本机均存在（`mavis` 本身不在 PATH，但**判定层洞成立**，与 D-25 同一威胁模型）。
+- 状态：已修复（v0.5.0 内闭环）
+- 修法方向：带值开关改成**按包装器分别定义**（布尔开关不吞 token；只有 `sudo -u/-g/-p/-C/-r/-t`、`env -u/--unset/-C/--chdir` 这类真带值开关才吞）；`timeout` 的时长按**位置参数**处理；包装器集合补齐 `timeout`、`powershell`/`pwsh`、`cmd /c`、`stdbuf`、`ionice`、`setsid` 等；`powershell -Command`/`-c` 之后的整段按**内层命令**再判一次。查表不得一律小写化（`sudo -H` 与 `sudo -h` 语义不同）；认不出的开关按「宁可多判不可漏判」处理。
+- 还需要什么：无 —— 判定层可独立验证，不需要真实执行这些命令。
+- 来源：D-25 独立复验的残余发现 ｜ 严重度：P0 ｜ 归属层：机制层
+
+### D-25c
+- 触发条件：bash 命令形如 `mavis list agent delete` —— `agent` 不是 `mavis` 之后的**第一个**子命令，却因为「`mavis` 后面出现 `agent delete`」而被判成危险动作。
+- 影响：**过度拦**。正常运维命令（先列再删的复合写法、`mavis agent list` 之类）被误判为账号级不可逆操作并拒答 —— 护栏误伤会让 worker 无路可走，最终绕过护栏（这正是上一轮 `run_code` 复合层误伤的教训）。
+- 复现步骤：喂合成 bash 载荷 `mavis list agent delete` → 观察 verdict 为 DENY（应为 ALLOW）。
+- 证据：独立 verifier 复验实测：`mavis list agent delete` 被拦；对照组 `mavis agent list` 未被拦（说明命中的是「`agent` 子命令非位置匹配」而不是别的分支）。verifier 措辞原文：「`mavis list agent delete` 被拦（`agent` 子命令非位置匹配，过度拦）」。
+- 状态：已修复（v0.5.0 内闭环）
+- 修法方向：`agent` 必须是 `mavis` 之后的**第一个**子命令才算 `mavis agent delete|update`；位置之后的 `agent` 不构成危险形态。
+- 还需要什么：无。
+- 来源：D-25 独立复验的残余发现 ｜ 严重度：P1 ｜ 归属层：机制层
+
+### D-25d
+- 触发条件：bash 命令用**闭集包装器名单之外**的启动器执行危险动作 —— `exec mavis agent delete sa-x`、`taskset 0 mavis agent delete sa-x`、`watch -c mavis agent delete sa-x`、`at now mavis agent delete sa-x`、`parallel mavis agent delete sa-x`、`script -q -c "…" mavis`、`chroot . mavis agent delete sa-x`、`strace -f mavis agent delete sa-x` 等 17 条形态。
+- 影响：账号级成员删除仍可绕过护栏。**根因不是漏了一个 `exec`** —— 是「命令位置」用**闭集包装器名单**实现：名单外的启动器被当成命令本身，后续 token 全部不再参与判定。补 10 个名字，下一个变体照样漏 —— 这是**结构性缺口**，也是 D-25b 的同根因族。
+- 复现步骤：喂上述形态的合成 bash 载荷 → 观察 verdict 为 ALLOW（应为 DENY）。
+- 证据：独立 verifier 实测 17 条形态全部 ALLOW；verifier 定位到 `plugin/scripts/lib.mjs` 的 `WRAPPER_SPECS`（14 键）与 `SHELL_PAYLOADS` 两张闭集表，`exec` 未列入（同类的 `command`/`builtin` 却列了）。本机 `mavis` 不在 PATH，未实际删成员，但**判定层洞成立**。
+- 状态：已修复（v0.5.0 内闭环）
+- 修法方向：**命令位置不再用闭集名单实现**，改为「数据段 / 执行段」二分 —— 段首命中**数据命令清单** → 段内其余 token 与引号内内容皆为数据；段首不是数据命令 → 段内**每个 token 都是命令候选**。由此 `exec` 及任何将来出现的包装器自动被覆盖。数据命令清单要尽量完整，但**不得收 `tar`/`unzip`/`zip`/`gzip`**（`--to-command` 会真执行，收进来等于开盲区）。另补启动器形态：`npx`/`bunx`、`npm`/`pnpm exec|dlx`、`yarn dlx` 之后的**首个程序参数**按命令位置判定。
+- 还需要什么：无。
+- 来源：D-25 残余闭环复验 ｜ 严重度：P0 ｜ 归属层：机制层
+
+### D-25e
+- 触发条件：bash 命令形态被**过度拦** —— ① `sh -c mavis agent delete sa-x`（**未加引号**）；② `command -v mavis agent delete sa-x`。
+- 影响：护栏误伤。① 按 POSIX，`sh -c <string> [name [args...]]` —— `command_string` 只有 `mavis` 一个词，`agent delete sa-x` 是 `$0`/`$1` 位置参数，**执行的是没有子命令的 `mavis`**，不该按 `mavis agent delete` 拦；② `command -v` 是**查询**语义（打印命令路径），不执行任何东西，更不该拦。误伤会让 worker 无路可走，最终绕过护栏 —— 与上一轮 `run_code` 复合层误伤同源。
+- 复现步骤：喂上述两条合成 bash 载荷 → 观察 verdict 为 DENY（应为 ALLOW）。
+- 证据：独立 verifier 实测两条均被拦；verifier 定位根因：`lib.mjs:991` 的 `positions.push(fi + 1)` 把**载荷下标漏进外层位置表**；`lib.mjs:861` 把 `command` 的 `-v` 当普通 bool 开关。对照：`sh -c "mavis agent delete sa-x"`（带引号，单个 token 内含空格，整个 token 就是命令）**必须拦**。
+- 状态：已修复（v0.5.0 内闭环）
+- 修法方向：载荷取参按 **shell 语义** —— `sh`/`bash` 的 `-c` 只取**一个**参数作命令串，余下是位置参数，**不推进外层位置表**；`powershell`/`cmd` 取余下整段；base64 载荷解不出即拒绝；`command -v`/`-V` 按查询语义处理，该段无命令位置。
+- 还需要什么：无。
+- 来源：D-25 残余闭环复验 ｜ 严重度：P1 ｜ 归属层：机制层
+
+## 五、v0.5.0 修复状态（2026-11-10）
+
+本轮按契约 `plugin/skills/super-agent-router/references/contract.md` 改造，独立验收见 `docs/audit/verification-v050.md`（35 条，30 成立 / 2 不成立 / 3 未验证，VERDICT FAIL → 修完复验）。
+
+| 编号 | 状态 | 说明 |
+|---|---|---|
+| D-01 | 已修复 | transcript brief 解析兼容 `codex` 变体 |
+| D-02 | 已修复 | bash 路径 token 不再把 `console.log` 当路径；目录型目标可识别 |
+| D-03 | 已修复 | 未登记的文件类工具名一律按写判定；`mavis` 的 `agent delete` 按参数拦截 |
+| D-04 | 已修复 | brief 解析改为按语义定位，不再只扫前 8 行 |
+| D-05 | 已修复 | 去重键缺 `turn_id` 时不再抹掉其它记录 |
+| D-06 | 部分修复 | **教训**已由 guard 直达 worker 上下文；**履历**按协议只给 Router 做匹配参考（分工，非遗漏） |
+| D-07 | 已修复 | SCOPE 解析不出条目即拒绝派工 |
+| D-08 | 文档解决 | 子会话不触发 SessionStart 是运行时事实，代码关不掉；已写进 `references/scope.md` 与 `references/brief.md` |
+| D-09 | 已修复 | 写冲突检测扩到项目维度 |
+| D-10 | 已修复 | 名额回收三条路：正常结束 / 超时兜底 / 读时自愈 |
+| D-11 | 已修复 | watchdog 证据须为可核验的具体物 |
+| D-12 | 已修复 | 台账用 routing id（`agent_key`）而非显示名做等值比较 |
+| D-13 | 已修复 | `verified_by` 必须在台账里有 `state=done` 记录；写入时校验，读取时不管历史 |
+| D-14 | 已修复 | 方法论/错题本改为精确文件放行（`mode='exact'`），不再展开整棵目录树 |
+| D-15 | 部分修复 | gate 的措辞治理仍依赖 Router自觉，未代码强制 |
+| D-16 | 已修复 | 写类工具取不到目标即拒绝（复合工具除外，契约 S3 已写明例外） |
+| D-17 | 部分修复 | 粗筛未命中仍静默放行，但注入文本已披露「已显示 N / 共 M」 |
+| D-18 | 已修复 | 错题本为空时显式说「0 条（是没栽过跟头，不是传递故障）」 |
+| D-19 | 已修复 | 台账截断策略调整 |
+| D-20 | 已修复 | 盘符绝对路径按真实路径校验存在性，报错保留盘符前缀 |
+| D-21 | 已修复 | 段首/段尾定位统一为绝对索引 |
+| D-22 | 已修复 | glob/grep 判定对象改为有效检索根，目录本身算命中 |
+| D-23 | 已修复 | 台账不再写无人读取的 `unscoped` 等字段 |
+| D-24 | 已修复 | 记录摘要取样不再按名录顺序截断，改为收齐→按战绩排序→取样→披露省略者 |
+| D-25 | 已修复 | bash 通道按**命令形态**识别账号级动作（`mavis agent delete|update` 等），12 条负例不误伤；独立复验 PASS_WITH_RESIDUAL，残余 D-25b / D-25c 已在本版闭环 |
+| D-25b | 已修复 | 包装器开关改为按包装器分别定义（带值/布尔/位置参数分列），包装器集合补齐，载荷按两式取参并整体再判 |
+| D-25c | 已修复 | 账号级 CLI 的子命令必须是第一个子命令：`mavis list agent delete` 不再被拦 |
+| D-25d | 已修复 | **闭集包装器名单**改为「数据段/执行段」二分，`exec` 及任何新包装器自动覆盖；另补启动器（npx/npm exec/pnpm dlx）语义 |
+| D-25e | 已修复 | 载荷取参按 shell 语义（`sh -c` 单参数、位置参数不推进外层）、`command -v` 查询语义，两例过度拦消除 |
+| D-26 | 文档解决（平台事实） | 平台**不对 `run_code` 容器派发 PreToolUse** → 复合层是预留防线；判定落点改到内层通道，契约 S3 与 `references/scope.md` 已写明 |
+
+### 本轮新引入又修掉的一条
+
+**`run_code` 复合判定误伤**（验收 V-02/V-04/V-07）：新加的 `run_code` 匹配项会把**整段代码文本**当命令文本扫路径，
+于是注释里的 `//`、字符串常量里的 scope 外路径、引号里的命令串都被当成越界目标，
+纯计算代码还会撞上「取不到目标就 deny」——实测三���正常代码被整次拒绝。
+
+已按验收给的修法改成：**复合层只做危险操作判定（`dangerousInCode`），作用域判定交回内层调用**。
+内层调用本来就被独立判定（V-05 实测内层 `bash` 被拦时外层 `run_code` 正常返回），所以复合层不再需要判作用域。
+
+### 两条「改对了但没被锁住」的断言（验收 V-12/V-13）
+
+- **V-12** 工具名兜底：原先无任何断言；已补 `upload_file` 等未登记文件类工具名按写判定且 scope 外必被拦的断言，回退实现后变红。
+- **V-13** D-20 盘符路径：原先两条断言在旧实现下同样是绿的 —— 原因是**单盘机器上旧实现截掉盘符前缀后，剩下的根相对路径恰好指向同一个文件**。
+  已改用 `subst` 挂载第二个盘符构造可区分场景，并补「报错必须保留盘符前缀」，回退后变红。
+
+### 残余（未在本会话端到端验证）
+
+线上安装副本在本次部署后才升级到 v0.5.0，而 **Hook 按会话激活** —— 本会话的 hook 缓存树仍是改前版本，
+因此「真实 run_code 在新插件下的表现」需要在**新开会话**里再验一次（写 scope 内 / 写 scope 外 / 纯计算各一次）。
+该边界由验收 V-32 记录，属环境边界而非产品失败。
+
+
+---
+
+## 六、独立复验与残留澄清（2026-11-10）
+
+上一轮验收（`docs/audit/verification-v050.md`）判 FAIL 并给出三条改判条件。本轮补派独立 verifier 复验
+（`docs/audit/verification-v050-recheck.md`，**VERDICT: PASS_WITH_RESIDUAL**）：三条改判条件全部以活体证据满足 ——
+① 复合分支不再扫代码文本、不再套用「取不到目标即 deny」，17 组合成载荷全部按预期（改回改前语义后恰好 5 条复合断言变红）；
+② V-12 与 D-20 两条断言在实现回退时确实变红（验收方首轮曾因把回退文件写到副本的错误位置而得到假绿，
+自行发现后改为核对「套件实际加载的文件」的 sha256 + 行为级对照，重跑通过）；
+③ 真实 `run_code` 三形态实测：scope 内写放行且文件建成、scope 外写被**内层**拦且文件未创建、纯计算放行。
+8 套回归 243 条断言基线全绿。
+
+复验报告列出的两条残留，其中**第一条在本轮被进一步查实并改判**：
+
+| 残留项 | 复验时的结论 | 本轮查实 |
+|---|---|---|
+| 残留 1：外层 `run_code` 在真实运行时是否进入 PreToolUse 未能证实 | 「未验证」，两种候选解释无法区分 | **已坐实**：平台**不对 `run_code` 容器派发 PreToolUse 事件**（带日志探针实测 + 全库 1640 次调用 0 次直接拒答）。机制层判定本身是对的（合成载荷 DENY），但真实运行时走不到 → 记为 **D-26**；由此暴露的 bash 通道旁路记为 **D-25** |
+| 残留 2：复合层断言对 HEAD 不具区分力 | 覆盖边界，非缺陷（区分力由 MUT-C 提供） | 维持原判 |
+
+**方法论教训**（已进 Router 错题本 `.superagent/lessons/_router.md` 的 RT-04）：
+**合成载荷只验证「判定逻辑」，不验证「触发链路」**，两者必须分开取证。
+「机制对」与「链路通」是两个问题，合并成一个结论就会造出「防护存在」的假象 —— 这正是 D-25 长期没被发现的土壤。
+
+
+---
+
+## 七、D-25 的修复与复验（2026-11-10）
+
+### 怎么发现的
+
+D-25 不是台账里原有的条目，是**独立复验收尾时的运行时取证**坐实的：
+用假 `PLUGIN_DATA` + 真 transcript 驱动仓库版 guard 做活体探针，发现
+`echo x >> .superagent/STATUS.md && mavis agent delete sa-victim` 被放行。
+而 `mavis` 是本机真实存在的 CLI，命令文本会被 shell 真的执行 —— **账号级成员删除可绕过护栏**。
+
+**它为什么能躲过上一轮验收**：上一轮验收用的是「合成载荷驱动 guard 脚本」，判定逻辑是对的（DENY）；
+但平台**不对 `run_code` 容器派发 PreToolUse 事件**，那层判定在真实运行时走不到 —— 详见 D-26。
+合成载荷验的是**判定逻辑**，不验**触发链路**，两者必须分开取证（RT-04）。
+
+### 修法与复验
+
+修法：bash 通道按**命令形态**判定（命令位置上的「CLI + 子命令 + 动作」），
+不按字样匹配；切命令段并识别命令替换，`sh -c`/`eval`/`sudo`/`env`/`xargs`/`find -exec` 包装与内层命令同判；
+只读分流仅对无命令替换的命令生效。
+
+独立复验结论 **PASS_WITH_RESIDUAL**：
+
+| 项 | 结论 |
+|---|---|
+| 探针 P1/P2/P4/P5 | ALLOW → DENY；P3/P6 保持 DENY；P7 仍 ALLOW |
+| 12 条负例 | 全部 ALLOW（无异常项） |
+| 10 条包装形态 | 全部 DENY |
+| 变异检验 | guard-test **11 条红**；另做 always-deny 桩对照（59 红）证明副本真被加载、无假绿 |
+| 五套回归 | 197 断言全绿，0 FAIL |
+| 残余 | **D-25b**（包装器布尔开关吞 token → 4 条形态仍放行）、**D-25c**（`mavis list agent delete` 过度拦） |
+
+### 一条验收误判的澄清（留给下一个验收方）
+
+复验方的 ACCEPT 五判「不成立」，理由是 `plugin/skills/.../contract.md` 与 `scope.md` 的 mtime
+（10:50:37）晚于 D-25 的代码改动（lib 10:48:35 / guard 10:48:52 / guard-test 10:49:09），
+于是判「本单越界改了 SCOPE 外文件」。
+
+**这条不成立**：那两个文件是**父会话（Router）** 在同一时间窗内改的 —— 契约与参考文档按协议由父会话维护
+（成员的 SCOPE 里没有它们，成员的方法论文件里也明写「不改协议文档与参考手册」）。
+时间戳撞车是**父会话并行工作**造成的，不是成员越界。判定越界要看**谁写的**，不能只看 mtime ——
+更稳的做法是比对内容归属与责任人，或在派工时把父会话的并行文档维护窗口告知验收方。

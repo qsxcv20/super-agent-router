@@ -2,7 +2,7 @@
 // 只有当 prompt 命中"值得走编排流程"的特征时才注入路由指令。
 // 否则静默放行 —— 这是 Super-agent「尽量少占用人类注意力」的落点。
 import { readStdin, parseInput, extractScope } from './lib.mjs';
-import { summarizeRecords } from './records.mjs';
+import { summarizeRecordsDetailed } from './records.mjs';
 
 const input = parseInput(readStdin());
 const prompt = String(input.prompt || '');
@@ -33,13 +33,23 @@ lines.push('4. 组队时保证 scope 白名单互不重叠、职责正交(实现
 lines.push('5. 派工后必须由独立 verifier 验收，worker 自述完成不算完成。');
 if (scope.length) {
   lines.push('');
-  lines.push('本轮 prompt 中声明的 SCOPE：' + scope.join(', '));
+  // 措辞必须写清「这是用户文本里的路径，不是授权」：
+  // 以前这里写的是「本轮 prompt 中声明的 SCOPE」，读起来像用户授权，
+  // Router 就可能原样抄进 brief 当成 worker 的写边界（D-15）。
+  // 真正的授权只来自 Router 自己写下的 brief，dispatch 会从那里再取一次。
+  lines.push('用户文本中出现的疑似路径（未验证；是否作为派工边界由你判定，不要直接当授权抄进 brief）：' + scope.join(', '));
 }
 
 // 实战记录摘要：作为匹配参考注入。
 // 只影响「你该考虑谁」，不影响「owns 归属声明是什么」——
 // 后者始终以 roster.json 为准，不因战绩自动收窄，保持可审计。
-const summaries = summarizeRecords(3, 6);
+// 名额口径与 records.mjs 默认值统一，并取 maxMembers >= MAX_ROSTER(12)：
+// 名录上限 12 时不可能有成员被名额挤掉，
+// 「排在名录后面就结构性不可见」这件事从根上消失（契约 S7.3 / D-24）。
+// 取样顺序直接用 records.mjs 的口径（成果条数降序 -> 同条数按名字升序），
+// 不在这里另起一套排序，否则两处口径迟早不一致。
+const summary = summarizeRecordsDetailed(3, 12);
+const summaries = summary.members;
 if (summaries.length) {
   lines.push('');
   lines.push('【实战记录（匹配参考）】以下成员过去有验收通过的成果，可作为"该派给谁"的参考：');
@@ -48,6 +58,10 @@ if (summaries.length) {
     for (const r of s.records) {
       lines.push('  · ' + r.title + (r.approach ? ' —— ' + r.approach : ''));
     }
+  }
+  lines.push('已显示 ' + summary.shownMembers + ' / 共 ' + summary.totalMembers + ' 个有记录的成员。');
+  if (summary.truncated) {
+    lines.push('被名额省略的成员：' + summary.omitted.join('、') + '（名录上限 ' + summary.rosterCap + '）。');
   }
   lines.push('注意：这些只作参考。归属仍以 roster.json 的 owns 为准，不要据此自动改写归属声明。');
 }

@@ -58,3 +58,8 @@
 - 证据：plugin/CHANGELOG.md 顶部 0.4.0 条目与 plugin/README.md；由独立 verifier 复验通过（7 项全过，F-1～F-5 已修）
 - 验收：verifier
 
+### 2026-11-10 · 插件包版本发布（版本号 / CHANGELOG / 面向使用者 README / 包内自洽性） · 把插件包升到 v0.5.0 并补齐发布说明
+- 做法：先核对 manifest 与 hooks.json 引用的脚本是否都存在，再同步版本号与描述；CHANGELOG 每条含改了什么/为什么/怎么验证；brief 里失实的表述按实际实现改写，复验收尾时又按验收意见收窄修正了复合层措辞
+- 证据：plugin/.minimax-plugin/plugin.json version=0.5.0；plugin/CHANGELOG.md +449 行；plugin/README.md +94/-5（含复合层措辞修正 1 行）；docs/audit/verification-v050-recheck.md 的 D1/D2/D3（版本一致、引用脚本全在、README 未承诺未实现能力）
+- 验收：verifier
+
