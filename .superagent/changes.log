@@ -5,3 +5,9 @@
 2026-11-09T14:47:48.955Z | register | sa-context-trace | 评估同组成员是否需要共享上下文，为 v0.5.0 提供事实依据
 2026-11-10T00:08:44.564Z | register | sa-mechanism-fix | 按缺陷台账 D- 编号改造 v0.4.0 的边界判定，发布 v0.5.0
 2026-11-10T00:08:44.614Z | register | sa-gate-integrity | 按缺陷台账 D- 编号改造 v0.4.0 的记录闸门，发布 v0.5.0
+2026-11-10T08:21:27.703Z | tier | sa-plugin-release | scoped -> full | by router
+2026-11-10T08:21:27.757Z | tier | sa-orchestration-audit | scoped -> full | by router
+2026-11-10T08:21:27.810Z | tier | sa-context-trace | scoped -> full | by router
+2026-11-10T08:21:27.864Z | tier | sa-mechanism-fix | scoped -> full | by router
+2026-11-10T08:21:27.918Z | tier | sa-gate-integrity | scoped -> full | by router
+2026-11-10T08:21:27.977Z | tier | worker | scoped -> full | by router

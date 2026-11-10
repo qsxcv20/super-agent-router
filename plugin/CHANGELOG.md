@@ -3,6 +3,126 @@
 本文件记录 super-agent-router 插件包的版本变更。
 格式参考 Keep a Changelog，版本号遵循语义化版本。
 
+## [0.5.4] - 2026-11-10
+
+本版给子代理**权限自动审核**与**权限等级**：撞墙自动记账、父会话一键批准；
+成员等级可提到「项目内全权」，人人平等、提权在管理员手里。
+
+### 变更 1：权限自动审核 —— 越界请求自动记账，一键批准
+
+**改了什么**
+
+- `plugin/scripts/guard.mjs`：新增 `denyOutOfScope()` —— 越界被拒时**自动**把「谁想访问什么、被拒了什么」
+  记进台账 `scope_requests[]`，并给出可复制的 `--grant` 命令；
+  同一目标重复撞墙只记一条（`hits` 累加），不把待审清单淹掉。
+- `plugin/scripts/lib.mjs`：新增 `recordScopeRequest()` / `grantScopeRequest()` / `denyScopeRequest()`；
+  台账新增 `scope_requests` 段，待审条目上限 50 条（只增不减的池子会变垃圾堆）。
+- `plugin/scripts/scope-amend.mjs`（新增）：`--list` 看待审清单、`--grant` / `--deny` 批准或拒绝、
+  `--dispatch --add` 直接给仍在飞的派工加条目。
+- 契约新增 **S13.1 / S13.2**。
+
+**为什么**
+
+本轮实测三次撞墙：两名专项成员与验收方都被 scope 墙拦住，父会话要靠 task_append 人工补口径才救回来。
+原来的恢复手段只有「改 brief 重新派工」（重开一次派工、浪费名额与上下文）或「等 worker 自己汇报」。
+现在越界请求自动进待审清单，父会话一条命令就能批。
+
+**怎么验证**
+
+- 新增 `tests/scope-amend-test.mjs`：撞墙→记账、清单可见、批准后当场放行、
+  **批准读不等于批准写**、拒绝后仍拦、对已结束的派工扩权被拒、同一目标重复撞墙只记一条。
+
+### 变更 2：权限等级 tier —— 「全部」这一级，人人都能用
+
+**改了什么**
+
+- `plugin/scripts/lib.mjs`：新增 `memberTier()` / `readRoster()` / `withinWorkspace()`；
+  权限等级声明在项目级 `.superagent/roster.json` 的成员条目上（`scoped` 默认 / `full`）。
+- `plugin/scripts/guard.mjs`：full 等级成员在**项目工作区内自由读写**，不必逐路径枚举白名单。
+- `plugin/scripts/scope-amend.mjs`：`--tiers` 看等级、`--tier full|scoped --agent <名> --approver <人>`
+  授予 / 收回；写进 roster.json 并留痕 `.superagent/changes.log`。
+- `plugin/scripts/session-start.mjs`：注入权限等级说明，并列出当前 full 成员
+  （Router 得知道谁能在项目内自由干活，否则提权了也不会被派上活）。
+- 契约新增 **S13.3**。
+
+**为什么**
+
+逐路径白名单对「派一个大活」太琐碎，而「限制得太死」的代价是真实的 —— 本轮多名子代理反复撞墙，
+验收方被拦，产出做不完。但放开不能变成「谁都能给自己放行」：让被约束者自己决定边界等于拆掉授权模型。
+所以自动的是**发现与记账**，批准权始终在管理员手里；**每个成员都平等**，任何人可被提权，
+但提权动作不在被约束者手里。
+
+**full 不等于无限权限**（三条照旧生效）
+
+1. `.superagent/` 编排层私有状态目录除外 —— 那是成员互相篡位、自己给自己提权的战场；
+2. 工作区之外的路径仍拦，仍自动记账待审；
+3. 账号级 / 对外不可逆动作（删成员、改成员、部署、发布）照旧硬拦。
+
+**怎么验证**
+
+- `tests/scope-amend-test.mjs`：scoped 白名单外仍拦、提权后项目内读/写/新文件放行、
+  工作区外仍拦且记账带 tier、账号级动作仍硬拦、`.superagent/` 写仍拦（相对路径与绝对路径各一条）、
+  提权写进 roster、收回后恢复拦截、对名录外成员提权被拒。
+
+### 变更 3：派工闸门 1c —— SCOPE 里的 .superagent/ 分三种形态判
+
+**改了什么**
+
+- `plugin/scripts/dispatch.mjs`：新增闸门 1c —— 目录条目拒派、可写条目拒派、
+  只读文件条目允许但**精确生效**；私有记忆目录（lessons / methods）一律拒派（闸门 1b）。
+- `plugin/scripts/lib.mjs`：新增共享判定 `touchesSuperagentPath()`（guard 与 dispatch 共用同一处）；
+  `inScope` 的读模式遇 `.superagent/` 条目**跳过树根展开**（精确生效），
+  写模式对 `.superagent/` 条目一律不授写权。
+- `plugin/scripts/guard.mjs`：加第二道防线 —— worker 的边界若直接从 transcript 的 brief 建起来
+  （不经 dispatch），brief 里含私有记忆目录时**直接拒绝建立边界**。
+
+**为什么**
+
+D-31 只封了 `lessons/` 与 `methods/` 两个目录，但同一个漏洞在别的条目上照样成立：
+读模式下**文件条目的读范围是它所在的整个目录**，所以 `ro: .superagent/roster.json` 这一条的读范围
+也是整个 `.superagent/` —— 能读到兄弟成员的错题本全文与方法论全文。
+写权限更糟：那份名录存着权限等级，能改它就是自己给自己提权。
+
+一刀切拒派也不对 —— 那会把「读编排层状态文件（名录 / 审计日志）」也堵死，
+而**独立验收方必须能读到并运行测试套件**才谈得上验收。所以按条目形态分判：
+能精确读到的那一个文件放行，会展开成整棵树的拒派。
+
+**怎么验证**
+
+- `tests/scope-amend-test.mjs`：目录条目被拒 / 可写条目被拒 / 私有记忆目录被拒 /
+  只读单文件条目可派且**读兄弟成员的错题本仍被拦** / brief 直接塞私有目录时 guard 拒绝建边界。
+
+### 变更 4：编排层教训回流 + 私有记忆目录拒派（v0.5.3 之后补上的三条）
+
+- **D-32** `plugin/scripts/lessons.mjs` 新增 `readRouterLessons()`，`session-start.mjs` 注入
+  「【编排层自己的历史教训】」—— 契约 S9 与 review.md 早就写着「由 SessionStart 注入 Router 上下文」，
+  代码从未实现。Router 的私有账用了 S1 的七字段模板，不能复用抽「- **规则**：」的那条正则。
+- **D-31** `dispatch.mjs` 闸门 1b：SCOPE 不得覆盖 `.superagent/lessons/` 与 `.superagent/methods/`。
+- **D-33** `references/scope.md` 更正：「实战记录注入给 worker」与代码不符 ——
+  履历是匹配时给 Router 的参考，不进 worker。
+
+### 变更 5：测试套件搬家 + 验收壳进仓库
+
+**改了什么**
+
+- 十一套回归从 `.superagent/` 移到 `tests/`。理由：`.superagent/` 是**成员的私有记忆目录**
+  （方法论 / 错题本 / 名录 / 审计日志），而测试套件是**项目资产**。
+  两者混在一处，导致「谁读得到什么」这条边界说不清 —— 现在私有目录封死，项目资产走正常 scope。
+- 验收壳从临时目录收进仓库：`tools/run-tests.mjs`（自动发现 `tests/*-test.mjs`）。
+  理由：验收壳是证据链的一环。放在 temp 里的壳，「谁在什么口径下跑的、跑的是哪几套」
+  第三方无法复核 —— 而「十套回归 0 FAIL」这句话本身就是要被独立验收的断言。
+
+**怎么验证**
+
+- `node tools/run-tests.mjs --all --root <repo>/plugin --repo <repo>` → 十一套 484 条断言 0 FAIL；
+  `node tools/run-tests.mjs --all --repo <repo>` → 安装副本同样 0 FAIL。
+
+### 变更 6：文档与台账
+
+- 缺陷台账补 D-31 ~ D-36；C 路成员审计（`docs/audit/member-persistence.md`）的
+  MP-01 / MP-02 / MP-03 / MP-A1 / MP-A2 入账为 D-37 ~ D-41（未修复项标注待修）。
+- `references/contract.md` 新增 S13；README 新增「权限等级」「子代理撞墙了怎么办」两节。
+
 ## [0.5.3] - 2026-11-10
 
 本版给**主 agent 定位**：它是管理层，不是执行层。
@@ -34,7 +154,7 @@
 
 **怎么验证**
 
-- 新增 `.superagent/hooks-test.mjs` 断言：注入必须含「管理层」「有就派工」「分工边界」「独立验收」
+- 新增 `tests/hooks-test.mjs` 断言：注入必须含「管理层」「有就派工」「分工边界」「独立验收」
   「共享但隔离」「单点小改」，且「不预置成员」与「管理层定位」必须**同时出现** ——
   两者是分开的两件事（不预置成员 ≠ 有成员也不派），不能互相打架。
 - 回归十套，仓库副本与安装副本均 0 FAIL。
@@ -99,7 +219,7 @@
 
 **怎么验证**
 
-- 新增常驻回归 `.superagent/dispatch-release-test.mjs`（24 条断言）：
+- 新增常驻回归 `tests/dispatch-release-test.mjs`（24 条断言）：
   缺 payload / 非法 JSON / 台账读不出来 → 报错退出；释放单条 → state、end_reason、ended_at 落盘；
   done / aborted 记录不动；未知 id → 报错且在飞数不变；按父会话批量释放；按成员收窄；
   `--data-dir` 与 `PLUGIN_DATA` 两种入口；写回不丢字段；
@@ -121,11 +241,11 @@ hooks.json 实际是 **4 类事件 / 7 条规则**（SessionStart、UserPromptSu
 **留痕存在却不可发现，等于半个静默失效。**
 
 现在按目录名判断：PLUGIN_DATA 已是本插件目录时直接写进去，否则才补一层。
-新增回归断言挂在 `.superagent/e2e-test.mjs`（痕迹必须落在 PLUGIN_DATA 下一层，且不得产生多套一层的怪目录）。
+新增回归断言挂在 `tests/e2e-test.mjs`（痕迹必须落在 PLUGIN_DATA 下一层，且不得产生多套一层的怪目录）。
 
 ### 变更 4：变异自检套件并发安全（D-30）
 
-`.superagent/d27-mut-test.mjs` 的 `copyPlugin()` 用**固定**临时目录名，拷贝前先清空 ——
+`tests/d27-mut-test.mjs` 的 `copyPlugin()` 用**固定**临时目录名，拷贝前先清空 ——
 两个实例并发跑时，后一个把前一个正在用的副本删掉重拷，前一个的 e2e 读到半拷状态，
 「基线副本全绿」于是报**假红**（本轮实测命中：报红的三条是 watchdog 断言，跟 D-27 毫无关系）。
 
@@ -235,7 +355,7 @@ v0.5.0 把判据写成一份契约（`plugin/skills/super-agent-router/reference
 - 代码位置：`plugin/scripts/lib.mjs` 的 `splitScopeEntry()` / `inScope()`（写判定分支）/ `scopeClash()`。
 - 人工确认：派一个 `SCOPE: ro: plugin/scripts/, docs/audit/report.md` 的工 ——
   读 `plugin/scripts/guard.mjs` 放行，写同一个文件被拦，写 `docs/audit/report.md` 放行。
-- 仓库回归：`node .superagent/scope-test.mjs`（本版同步更新）。
+- 仓库回归：`node tests/scope-test.mjs`（本版同步更新）。
 
 ### 变更 2：通道语义分离，bash 按命令意图分流
 
@@ -264,7 +384,7 @@ v0.5.0 把判据写成一份契约（`plugin/skills/super-agent-router/reference
   （白名单）/ `extractWriteTargets()`；`plugin/scripts/guard.mjs` 的 `targetsOf()` 里 bash 分支。
 - 人工确认：worker 执行 `cat plugin/scripts/guard.mjs`（白名单内）应放行；
   执行 `cat ../../outside.md` 应被拦；执行 `rm -rf some-dir` 应按写判定而不是被当成「无路径」放行。
-- 仓库回归：`node .superagent/guard-test.mjs`（本版同步更新）。
+- 仓库回归：`node tests/guard-test.mjs`（本版同步更新）。
 
 ### 变更 3：glob / grep 改按「有效检索根」判定
 
@@ -284,7 +404,7 @@ v0.5.0 把判据写成一份契约（`plugin/skills/super-agent-router/reference
   （`targets: [globRoot()]`）。
 - 人工确认：worker 用 `grep` 在 scope 条目所在目录树内检索应放行；
   同一 pattern 改成在目录树外检索应被拦。
-- 仓库回归：`node .superagent/scope-test.mjs`、`node .superagent/guard-test.mjs`（本版同步更新）。
+- 仓库回归：`node tests/scope-test.mjs`、`node tests/guard-test.mjs`（本版同步更新）。
 
 ### 变更 4：brief 解析兼容两种 transcript 变体，并按语义定位
 
@@ -308,7 +428,7 @@ v0.5.0 把判据写成一份契约（`plugin/skills/super-agent-router/reference
 - 代码位置：`plugin/scripts/lib.mjs` 的 `userMessageText()`（两种变体的形状分支）与
   `readBriefFromTranscript()`（语义定位的扫描循环）。
 - 人工确认：在一个前置消息超过 8 条的会话里派工，worker 仍能正确取到 scope（不再被拦成「无白名单」）。
-- 仓库回归：`node .superagent/e2e-test.mjs`（本版同步更新）。
+- 仓库回归：`node tests/e2e-test.mjs`（本版同步更新）。
 
 ### 变更 5：解析不到边界 = 拒绝，不再放行（破坏性变更）
 
@@ -330,7 +450,7 @@ v0.5.0 把判据写成一份契约（`plugin/skills/super-agent-router/reference
   `if (!binding || !scope.length) deny(...)` 两处（对照 diff 可见旧代码此处为 `process.exit(0)`）。
 - 人工确认：派一个 SCOPE 行写不规范的工，worker 的工具调用应被明确拒绝并给出失败原因，
   而不是无声通过。
-- 仓库回归：`node .superagent/guard-test.mjs`（本版同步更新）。
+- 仓库回归：`node tests/guard-test.mjs`（本版同步更新）。
 
 ### 变更 6：危险操作改按「工具名 + 参数」二维判定
 
@@ -360,7 +480,7 @@ v0.5.0 把判据写成一份契约（`plugin/skills/super-agent-router/reference
 - 人工确认：在 worker 会话里执行 `mavis` 的 `command = "agent delete ..."`，应被拦；
   执行 `git push`，应被拦。
 - 注意：`hooks.json` 的 matcher 变更**必须新开会话才生效**，旧会话里这两类调用仍不受 guard 约束。
-- 仓库回归：`node .superagent/hooks-test.mjs`（本版同步更新）。
+- 仓库回归：`node tests/hooks-test.mjs`（本版同步更新）。
 
 ### 变更 7：未登记的文件类工具名一律按写判定
 
@@ -385,7 +505,7 @@ v0.5.0 把判据写成一份契约（`plugin/skills/super-agent-router/reference
 - 代码位置：`plugin/scripts/guard.mjs` 的 `toolKind()` 与 `FILE_TOOL_HINT` 正则。
 - 人工确认：worker 调一个未登记但名字像文件操作的工具（如 `my_file_writer`）应被按写判定处理，
   而不是直接放行。
-- 仓库回归：`node .superagent/guard-test.mjs`（本版同步更新）。
+- 仓库回归：`node tests/guard-test.mjs`（本版同步更新）。
 
 ### 变更 8：派工去重键不再只依赖 `turn_id`
 
@@ -407,7 +527,7 @@ v0.5.0 把判据写成一份契约（`plugin/skills/super-agent-router/reference
 - 代码位置：`plugin/scripts/dispatch.mjs` 的 `turnKey` 计算与 `existing` 查找分支
   （对照 diff 可见旧代码的过滤条件会整条抹除记录）。
 - 人工确认：连续派两个 worker 给不同成员，检查台账里两条记录都在，前一个的 scope 没有消失。
-- 仓库回归：`node .superagent/chain-test.mjs`（本版同步更新）。
+- 仓库回归：`node tests/chain-test.mjs`（本版同步更新）。
 
 ### 变更 9：在飞名额回收三条路 + 累计派工额度持久化
 
@@ -432,7 +552,7 @@ v0.5.0 把判据写成一份契约（`plugin/skills/super-agent-router/reference
   `markDispatchDone()` / `dispatchedTotal()` / `bumpDispatchCounter()`。
 - 人工确认：派一个工后中断该 worker（或让子会话异常退出），
   检查台账里该记录最终不再是 `active`（判死或已回收）。
-- 仓库回归：`node .superagent/chain-test.mjs`（本版同步更新）。
+- 仓库回归：`node tests/chain-test.mjs`（本版同步更新）。
 
 ### 变更 10：履历的验收方必须真实存在
 
@@ -454,7 +574,7 @@ v0.5.0 把判据写成一份契约（`plugin/skills/super-agent-router/reference
 - 代码位置：`plugin/scripts/record-gate.mjs` 的 `verified_by` 校验分支（台账 `state == 'done'` 判定）。
 - 人工确认：用一个从未派过工的验收方名字写履历，应被拒绝；
   用确实跑过并已回收为 `done` 的验收方名字，应写入成功。
-- 仓库回归：`node .superagent/records-test.mjs`（本版同步更新）。
+- 仓库回归：`node tests/records-test.mjs`（本版同步更新）。
 
 ### 变更 11：错题本归因按多语序枚举，编排层的锅不进成员账
 
@@ -481,7 +601,7 @@ v0.5.0 把判据写成一份契约（`plugin/skills/super-agent-router/reference
 - 代码位置：`plugin/scripts/lessons-gate.mjs` 的 `ROUTER_FAULT_PATTERNS` 数组与 `routerFaultLabel()`。
 - 人工确认：用「给错的 brief」作为根因写成员错题本，应被拒绝并指出命中语序；
   用「按 brief 做了但没回显口径」作为根因，应允许写入。
-- 仓库回归：`node .superagent/lessons-test.mjs`（本版同步更新）。
+- 仓库回归：`node tests/lessons-test.mjs`（本版同步更新）。
 
 ### 变更 12：记录摘要取样不再按名录顺序截断，并披露「已显示 N / 共 M」
 
@@ -507,7 +627,7 @@ v0.5.0 把判据写成一份契约（`plugin/skills/super-agent-router/reference
 - 代码位置：`plugin/scripts/records.mjs` 的 `summarizeRecordsDetailed()`；
   `plugin/scripts/gate.mjs` / `plugin/scripts/session-start.mjs` 里的「已显示 N / 共 M」输出行。
 - 人工确认：新会话第一轮的注入文本里应能看到「已显示 N / 共 M 个有记录的成员」这一行。
-- 仓库回归：`node .superagent/records-test.mjs`、`node .superagent/roster-test.mjs`（本版同步更新）。
+- 仓库回归：`node tests/records-test.mjs`、`node tests/roster-test.mjs`（本版同步更新）。
 
 ### 变更 13：成员的教训直接注入 worker 上下文
 
@@ -529,7 +649,7 @@ v0.5.0 把判据写成一份契约（`plugin/skills/super-agent-router/reference
 - 代码位置：`plugin/scripts/guard.mjs` 的 `injected` 变量与 `allow(injected)` 调用点；
   `plugin/scripts/dispatch.mjs` 派工时写台账的 `lessons` / `lesson_count` 字段。
 - 人工确认：给一个错题本里有条目的成员派工，worker 上下文里应能看到该成员的历史教训。
-- 仓库回归：`node .superagent/chain-test.mjs`（本版同步更新）。
+- 仓库回归：`node tests/chain-test.mjs`（本版同步更新）。
 
 ### 变更 14：watchdog 按契约校验产出条目
 
@@ -552,7 +672,7 @@ v0.5.0 把判据写成一份契约（`plugin/skills/super-agent-router/reference
 - 代码位置：`plugin/scripts/lib.mjs` 的 `ENTRY_FIELDS` 与 `validateEntryOutput()`；
   `plugin/scripts/watchdog.mjs` 里的 `entryCheck` 分支。
 - 人工确认：worker 交付一份缺字段的条目型产出，应被 block 并明确指出缺哪一项。
-- 仓库回归：`node .superagent/e2e-test.mjs`（本版同步更新）。
+- 仓库回归：`node tests/e2e-test.mjs`（本版同步更新）。
 
 ### 变更 15：派工闸门不再静默丢弃解析不出的 SCOPE 条目
 
@@ -575,7 +695,7 @@ v0.5.0 把判据写成一份契约（`plugin/skills/super-agent-router/reference
 - 代码位置：`plugin/scripts/dispatch.mjs` 的 `scopeDetail.rejected` 分支与 `parsed.ok` 分支；
   `plugin/scripts/guard.mjs` 的 `parsed.ok` 分支。
 - 人工确认：派一个 SCOPE 里写了明显不像路径的条目的工，应被拒绝并指出哪个条目解析不出来。
-- 仓库回归：`node .superagent/scope-test.mjs`（本版同步更新）。
+- 仓库回归：`node tests/scope-test.mjs`（本版同步更新）。
 
 ### 变更 16：watchdog 的产出校验改按「可核验的具体物」判定
 
@@ -601,7 +721,7 @@ v0.5.0 把判据写成一份契约（`plugin/skills/super-agent-router/reference
   `stripReferenceClauses()`。
 - 人工确认：交付文本写「测试通过」且无具体路径时应被拦；
   写「改动 plugin/scripts/guard.mjs，参考 plugin/README.md」不应被误拦。
-- 仓库回归：`node .superagent/e2e-test.mjs`（本版同步更新）。
+- 仓库回归：`node tests/e2e-test.mjs`（本版同步更新）。
 
 ### 变更 17：新增 `references/contract.md` —— 契约单一事实源
 
@@ -670,9 +790,9 @@ Router 会被自己派出去的 worker 锁死 —— 表现为「派完第一个
 
 **怎么验证**
 
-- 仓库回归：`node .superagent/chain-test.mjs` 第 9 组断言「Router 会话不被 worker scope 约束」
+- 仓库回归：`node tests/chain-test.mjs` 第 9 组断言「Router 会话不被 worker scope 约束」
   （父会话写 `config/prod.yaml` 不被拦），同时断言 worker 写自己 scope 外文件仍被拦、写 scope 内文件放行。
-- 仓库回归：`node .superagent/scope-test.mjs` 第 1 组断言 Router 父会话读写任意路径都不被拦。
+- 仓库回归：`node tests/scope-test.mjs` 第 1 组断言 Router 父会话读写任意路径都不被拦。
 - 人工确认：在同一个会话里先派一个带 SCOPE 的工，再让主会话改一个 scope 外的文件 —— v0.3.x 会被拦，v0.4.0 不会。
 
 ### 变更 2：guard 的 scope 改为从子会话自己的 transcript 里的派工原文解析
@@ -693,9 +813,9 @@ v0.3.x 靠 session_id 猜测「我这次是哪次派工的 worker」，在父子
 
 **怎么验证**
 
-- 仓库回归：`node .superagent/e2e-test.mjs` 第 3 组构造子会话 transcript，断言
+- 仓库回归：`node tests/e2e-test.mjs` 第 3 组构造子会话 transcript，断言
   worker scope 内放行、scope 外 deny、bash 里藏 scope 外路径 deny。
-- 仓库回归：`node .superagent/chain-test.mjs` 第 9 组断言 worker 写 scope 外文件被拦。
+- 仓库回归：`node tests/chain-test.mjs` 第 9 组断言 worker 写 scope 外文件被拦。
 - 人工确认：派一个带 SCOPE 的工，让 worker 改一个 scope 外的文件 —— 应被拦并给出
   「本次派工声明的 SCOPE 为 [...]」的提示。
 
@@ -721,7 +841,7 @@ v0.3.x 靠 session_id 猜测「我这次是哪次派工的 worker」，在父子
 
 **怎么验证**
 
-- 仓库回归：`node .superagent/chain-test.mjs` 第 6 组断言 scope 重叠的派工被拒（「组队冲突」）、
+- 仓库回归：`node tests/chain-test.mjs` 第 6 组断言 scope 重叠的派工被拒（「组队冲突」）、
   不重叠的 scope 可以派工；第 7 组断言目录 scope 与其下文件也算重叠；第 8 组断言单会话派工数超限被拒且提示指向「上限」。
 - 人工确认：在同一会话里派两个 SCOPE 相同的工 —— 第二个应被拒并列出冲突路径。
 
@@ -743,7 +863,7 @@ v0.3.x 的「在飞派工」只增不减。并发上限和 scope 重叠检测都
 
 **怎么验证**
 
-- 仓库回归：`node .superagent/chain-test.mjs` 第 10 组：worker 跑完后，对同一 scope 再次派工
+- 仓库回归：`node tests/chain-test.mjs` 第 10 组：worker 跑完后，对同一 scope 再次派工
   应被放行（不再被判为「重叠」）。
 - 人工确认：连续用同一个 SCOPE 派同一个工两轮（第一轮 worker 正常结束），第二轮不应被「组队冲突」拒绝。
 
@@ -769,7 +889,7 @@ v0.3.x 的「在飞派工」只增不减。并发上限和 scope 重叠检测都
 
 **怎么验证**
 
-- 仓库回归：`node .superagent/e2e-test.mjs` 第 2 组断言派工记录带 `dispatch_id`，
+- 仓库回归：`node tests/e2e-test.mjs` 第 2 组断言派工记录带 `dispatch_id`，
   且按 `parent_session_id` 能查到记录（v0.3.x 用的是 `session_id` 字段）。
 - 人工确认：检查 `${PLUGIN_DATA}/dispatches.json`，应能看到 `dispatches` 与 `bindings` 两个数组，
   `dispatches` 里每条有 `parent_session_id`，worker 跑过一次之后 `bindings` 里出现对应 `session_id`。

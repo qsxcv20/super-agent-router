@@ -8,7 +8,7 @@
 //   M3 去掉动作性限定 -> 伪信号断言红（普通句子被误触发）
 //   M4 常真桩对照     -> 单点动作 + 伪信号断言红（证明断言能发现过触发）
 //
-// 用法：node .superagent/d27-mut-test.mjs
+// 用法：node tests/d27-mut-test.mjs
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -17,7 +17,7 @@ import crypto from 'node:crypto';
 
 const REPO = process.env.SAR_REPO_DIR || process.cwd();
 const PLUGIN = process.env.SAR_PLUGIN_ROOT || path.join(REPO, 'plugin');
-const E2E = path.join(REPO, '.superagent', 'e2e-test.mjs');
+const E2E = path.join(REPO, 'tests', 'e2e-test.mjs');
 
 let fail = 0;
 const ok = (l, c, e = '') => { if (!c) fail++; console.log((c ? 'PASS ' : 'FAIL ') + l + (e ? ' :: ' + e : '')); };

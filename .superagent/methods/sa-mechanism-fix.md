@@ -65,6 +65,6 @@ transcript 里的 brief 解析、派工台账的生命周期。产出的改动�
 
 ### 2026-11-10 · 危险操作在 bash 通道的形态识别（D-25 账号级不可逆操作绕过族） · 堵住 bash 通道绕过账号级不可逆操作的洞，并把同一族残余全部闭环
 - 做法：按命令位置上的「CLI+子命令+动作」判定而非字样匹配；切命令段并识别命令替换/进程替换/base64 载荷；包装器开关按包装器分别定义（带值/布尔/位置参数）；最终把命令位置从「闭集包装器名单」改为「数据段/执行段」二分，使 exec 及任何新包装器自动覆盖
-- 证据：plugin/scripts/lib.mjs 命令形态判定 + .superagent/guard-test.mjs 的 D-25 断言（两轮共 76 条）；两轮独立复验均 PASS_WITH_RESIDUAL，残余 D-25b/D-25c/D-25d/D-25e 全部闭环；父会话活体复核 43 条必拦全 DENY / 21 条负例全 ALLOW / 0 异常；五套回归 0 FAIL
+- 证据：plugin/scripts/lib.mjs 命令形态判定 + tests/guard-test.mjs 的 D-25 断言（两轮共 76 条）；两轮独立复验均 PASS_WITH_RESIDUAL，残余 D-25b/D-25c/D-25d/D-25e 全部闭环；父会话活体复核 43 条必拦全 DENY / 21 条负例全 ALLOW / 0 异常；五套回归 0 FAIL
 - 验收：verifier
 

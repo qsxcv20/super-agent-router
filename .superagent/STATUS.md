@@ -1,5 +1,28 @@
 # super-agent-router 当前状态
 
+更新：2026-11-10　版本：**v0.5.4**
+
+## 状态：v0.5.4 已发布，待独立验收
+
+本版三件事：**权限自动审核**（越界自动记账 + 一键批准）、**权限等级 tier**（成员平等，可被管理员提权）、
+以及把「成员互相篡位」的口子彻底堵上（闸门 1c 三形态判定）。
+
+| 变更 | 落点 |
+|---|---|
+| 越界自动记账 | `plugin/scripts/guard.mjs` 的 `denyOutOfScope()` → 台账 `scope_requests[]` |
+| 一键批准 / 拒绝 | `plugin/scripts/scope-amend.mjs`（`--list / --grant / --deny / --dispatch --add`） |
+| 权限等级 tier | `roster.json` 成员条目的 `tier` 字段（`scoped` 默认 / `full` 项目内全权） |
+| 提权入口 | `scope-amend.mjs --tier full\|scoped --agent <名> --approver <人>`，留痕 `changes.log` |
+| 私有记忆封死 | 派工闸门 1b/1c + guard 第二道防线 + `inScope` 对 `.superagent/` 精确生效 |
+
+**当前等级**：5 个专项成员 + 内置 `worker` = full；`explore`（不写文件）与
+`verifier`（不亲手改）保持 scoped —— 按各自在名录里声明的职责分，等级机制对所有人开放。
+
+**回归**：十一套 484 条断言，仓库副本与安装副本均 0 FAIL（`node tools/run-tests.mjs --all`）。
+测试套件已从 `.superagent/` 迁到 `tests/`（私有记忆目录只放私有记忆），验收壳收进仓库 `tools/run-tests.mjs`。
+
+---
+
 更新：2026-11-09 21:05　版本：v0.4.0
 
 ## 状态：v0.4.0 已发布，并通过独立验收
@@ -258,7 +281,7 @@ D-25 是本轮**复验收尾时从运行时取证里挖出来的 P0**：bash 通
 | 判定可独立断言 | 否 | **是** |
 | 载荷坏掉时 | 静默不命中 | **留痕**（`gate-trace.jsonl`） |
 
-**变异自检**（常驻套件 `node .superagent/d27-mut-test.mjs`，14 条断言）：
+**变异自检**（常驻套件 `node tests/d27-mut-test.mjs`，14 条断言）：
 M1 回退词表 → 红 3 条；M2 恢复长度门槛 → 红 1 条；M3 去掉动作性限定 → 伪信号红 5 条；
 M4 常真桩对照 → B 档 6 条 + C 档 7 条全红。每组都核对 sha256 落盘 + `node --check`。
 
@@ -287,7 +310,7 @@ node scripts/release-slot.mjs '{"parent_session_id":"mvs_xxx"}'
 只把 `active` 翻成 `aborted`，`done` / `aborted` 的记录一个字节都不动；
 目标 id 不存在或台账读不出来时**报错退出**，不静默「假装释放成功」——
 否则调用方以为名额放掉了，实际还占着。
-常驻回归 `.superagent/dispatch-release-test.mjs`（20 条断言），回归从九套变十套，两份副本均 0 FAIL。
+常驻回归 `tests/dispatch-release-test.mjs`（20 条断言），回归从九套变十套，两份副本均 0 FAIL。
 
 **顺手更正的一处长期错误**：hooks.json 实际是 **4 类事件 / 7 条规则**，
 但「5 类」在思维导图、`context-flow.md`、`verification-v050.md`、缺陷台账四处传了一整轮，四处已统一改掉。
@@ -304,12 +327,12 @@ node scripts/release-slot.mjs '{"parent_session_id":"mvs_xxx"}'
 **留痕存在却不可发现，等于半个静默失效。**
 
 现在按目录名判断：PLUGIN_DATA 已是本插件目录时直接写进去，否则才补一层。
-变异检验：把修复回退后，`.superagent/e2e-test.mjs` 里恰好那 2 条 D-29 断言变红（direct=false nested=true），其余全过 ——
+变异检验：把修复回退后，`tests/e2e-test.mjs` 里恰好那 2 条 D-29 断言变红（direct=false nested=true），其余全过 ——
 断言不是空转。
 
 ### 六、D-30：变异自检套件并发不安全（会假红）
 
-`.superagent/d27-mut-test.mjs` 的 `copyPlugin()` 用固定临时目录名 + 先删后拷。
+`tests/d27-mut-test.mjs` 的 `copyPlugin()` 用固定临时目录名 + 先删后拷。
 父会话与验收方同时跑全量回归时互相踩：本轮安装副本那份报了
 「FAIL D-27 变异自检·基线副本全绿 :: FAIL「搞定了，测试通过」被拦 | FAIL 条目缺字段时 block | FAIL 条目缺统计行时 block」
 —— 这三条是 **watchdog** 断言，与 D-27 判定毫无关系，正是被抹掉副本的受害者。

@@ -4,7 +4,7 @@
 
 一句话结论：把独立验收也纳入证据链后，26 条里 25 条成立、1 条被证伪，合并去重后共 24 条独立缺陷；P0 级 5 条全部是「静默放行」——边界判定一旦落空，越界管控不是报错，而是安静地不再生效。
 
-条目统计：总计 24 条，其中 P0 5 条，P1 11 条，P2 8 条；已复现 21 条，推断 3 条
+条目统计（2026-11-10 更新）：总计 **45** 条（含 D-25b~D-25e 四个子条目），其中 P0 9 条、P1 18 条、P2 13 条、P3 4 条，另 D-26 一条为翻案条目（未标严重度）。前 24 条来自本轮两份独立清单的合并；D-25 之后为后续各轮实测与三路专项验证的追加条目，来源逐条写在各条目的「来源」一行。
 
 ---
 
@@ -40,6 +40,17 @@
 | D-28 | 本轮实测 | P2 | 机制层 | 派工被取消/中断时不触发 SubagentStop，并发名额泄漏到 TTL（2 小时），机制没有可用释放入口 |
 | D-29 | 本轮实测 | P3 | 机制层 | 留痕路径多套一层目录：痕迹写了，但按文档给的路径找不到 —— 留痕不可发现等于半个静默失效 |
 | D-30 | 本轮实测 | P3 | 机制层 | 变异自检套件用固定临时目录，并发跑互相抹副本 → 假红 —— 会给假 FAIL 的测试比没有测试更危险 |
+| D-31 | 验证轮实测 | P1 | 机制层 | SCOPE 覆盖私有记忆目录：读模式按目录树放宽，成员能读到兄弟成员的错题本全文与 Router 私有账 |
+| D-32 | 验证轮实测 | P2 | 契约层 | 编排层教训零回流：契约与 review.md 都写着「SessionStart 注入 _router.md」，代码从未实现 |
+| D-33 | 验证轮实测 | P3 | 契约层 | scope.md 声称「实战记录注入给 worker」，与代码不符（履历只给 Router 做匹配参考） |
+| D-34 | 用户诉求 | P1 | 机制层 | 越界后没有恢复通道：撞墙只能改 brief 重新派工或等 worker 汇报，父会话要靠 task_append 人工补口径 |
+| D-35 | 用户诉求 | P1 | 机制层 | 权限只有「逐路径白名单」一档：派大活要枚举路径、限制太死，且机制里根本没有「提权」这个动作 |
+| D-36 | 本轮实现 | P1 | 机制层 | SCOPE 的 .superagent/ 单文件条目读范围覆盖整棵目录树（ro: roster.json 就能读全部错题本）+ 可改自己的权限等级 |
+| D-37 | C 路审计 MP-01 | P1 | 机制层 | 派工链路不校验目标成员是否存在于账号 → 静默空转并占名额、误拦同 SCOPE 的正常派工 |
+| D-38 | C 路审计 MP-02 | P2 | 机制层 | 陈旧判定（roster reconcile）既无执行点也无消费者 —— 工具存在但机制不生效 |
+| D-39 | C 路审计 MP-03 | P2 | 机制层 | 账号级成员创建无闸门（删除/改写已硬拦），与删除/改写不对称 → 账号与名录必然漂移 |
+| D-40 | C 路审计 MP-A1 | P3 | 机制层 | 越界拦截消息把「只读条目不授写权」说成「路径不在白名单内」→ 诱导把只读条目升级成可写 |
+| D-41 | C 路审计 MP-A2 | P2 | 机制层 | 复合层危险词扫描对文档正文同样生效：报告引用被拦命令的形态即被拦，损害「每条可复现」这条底线 |
 
 **合并与剔除说明**
 
@@ -108,7 +119,7 @@
 - 触发条件：PreToolUse(task) 载荷不含 `turn_id`（或为空串）。
 - 影响：`dispatch.mjs:30` 得到 `tid = ''`，`dispatch.mjs:95-100` 的去重过滤 `String(d.turn_id || '') === tid` 对**所有** turn_id 为空的历史记录成立 → 同一 `parent_session_id` + 同一 `agent` 的旧 active 记录被整条删除。前一个 worker 的 scope 从台账消失 → 闸门二（重叠检测）看不到它 → 两个 worker 可被派到同一处互相覆盖；闸门三（在飞名额）也少算一个 → 并发上限形同虚设。
 - 复现步骤：
-- 证据：`plugin/scripts/dispatch.mjs:30`（tid 取值）、`plugin/scripts/dispatch.mjs:95-100`（去重过滤）、`plugin/scripts/dispatch.mjs:102-116`（写入）。`.superagent/chain-test.mjs` 的 `dispatch()` 辅助函数始终带 `turn_id`，因此这条路径没有被任何回归测试覆盖。
+- 证据：`plugin/scripts/dispatch.mjs:30`（tid 取值）、`plugin/scripts/dispatch.mjs:95-100`（去重过滤）、`plugin/scripts/dispatch.mjs:102-116`（写入）。`tests/chain-test.mjs` 的 `dispatch()` 辅助函数始终带 `turn_id`，因此这条路径没有被任何回归测试覆盖。
 - 状态：已复现（已完全确认）
 - 修法方向：改 `plugin/scripts/dispatch.mjs:95-100` 的去重键——缺 `turn_id` 时退化为 `parent_session_id + agent + tool_use_id`（`tool_use_id` 已在 `dispatch.mjs:106` 写入但从未被读取，正好可作唯一键），不要把空串当成「同一个 turn」。
 - 还需要什么：无，代码路径已确定
@@ -168,7 +179,7 @@
 - 触发条件：worker 收尾文本同时含「完成类」词与「证据类」词，例如「搞定了，测试通过」。
 - 影响：`claimsDone`（`watchdog.mjs:94`）命中「搞定」；`hasEvidence`（`watchdog.mjs:95`）命中「测试」→ `watchdog.mjs:96` 的拦截分支不触发；`claimedPaths` 又因文本里没有产出动词而返回空 → `watchdog.mjs:115` 放行。watchdog 头部注释（「早期版本只做字面关键词匹配——『搞定了』这种话能蒙混过关……现在改为：先判声明，再把声明里提到的文件路径真实校验一遍」）声称的修复并不成立：加两个关键词即可完全绕过完成度校验。
 - 复现步骤：
-- 证据：`plugin/scripts/watchdog.mjs:9-12`（注释声称的修复）、`plugin/scripts/watchdog.mjs:94-96`（判定实现）、`plugin/scripts/watchdog.mjs:105-115`（文件校验分支未触发）；`.superagent/chain-test.mjs:80-87` 只锁了「搞定了」单个词，未覆盖「搞定了 + 证据关键词」。
+- 证据：`plugin/scripts/watchdog.mjs:9-12`（注释声称的修复）、`plugin/scripts/watchdog.mjs:94-96`（判定实现）、`plugin/scripts/watchdog.mjs:105-115`（文件校验分支未触发）；`tests/chain-test.mjs:80-87` 只锁了「搞定了」单个词，未覆盖「搞定了 + 证据关键词」。
 - 状态：已复现（已完全确认）
 - 修法方向：改 `plugin/scripts/watchdog.mjs:95` 的 `hasEvidence`——证据必须是**可核验的具体物**（存在的文件路径 / 带行号的引用 / 可复现的命令与输出），而不是「测试/运行/结果」这类描述性词；建议收敛为「至少一个通过 `claimedPaths` 存在性校验的路径」或「一段命令输出」。
 - 还需要什么：无，代码路径已确定
@@ -278,7 +289,7 @@
 - 触发条件：worker 用 `glob`/`grep` 且显式传 `path` 目录（该目录在 scope 条目所在目录下，但目录本身不是条目）。
 - 影响：`guard.mjs:123-127` 的 `targetOf` 优先取 `tInput.path` → 目标变成目录（如 `src/app`）；`lib.mjs:147-152` 的读模式只放开「条目所在目录下的**文件**」，不放开「该目录本身」→ `inScope` 返回 false → `guard.mjs:149-153` deny。结果是：读 `src/app/session.ts` 放行、列 `src/app` 目录被拦——同一个目录，两种结论。
 - 复现步骤：
-- 证据：`plugin/scripts/guard.mjs:123-129`（目标取值）、`plugin/scripts/lib.mjs:129-155`（`inScope` 读模式分支）、`plugin/scripts/guard.mjs:149-153`（最终 deny）；`.superagent/e2e-test.mjs:127-128`（`{pattern:'src/app/*.ts'}` 放行 / `{pattern:'**/*.ts'}` 拦截）与 `.superagent/guard-test.mjs:97-102`（同一组用例）只锁了「pattern 不带 path」的情形，未覆盖带 `path` 的调用；`.superagent/chain-test.mjs` 全文 `glob|grep|pattern` 零命中，不含任何 glob 用例（原引用 `:157-166` 举证不实，已删除）。
+- 证据：`plugin/scripts/guard.mjs:123-129`（目标取值）、`plugin/scripts/lib.mjs:129-155`（`inScope` 读模式分支）、`plugin/scripts/guard.mjs:149-153`（最终 deny）；`tests/e2e-test.mjs:127-128`（`{pattern:'src/app/*.ts'}` 放行 / `{pattern:'**/*.ts'}` 拦截）与 `tests/guard-test.mjs:97-102`（同一组用例）只锁了「pattern 不带 path」的情形，未覆盖带 `path` 的调用；`tests/chain-test.mjs` 全文 `glob|grep|pattern` 零命中，不含任何 glob 用例（原引用 `:157-166` 举证不实，已删除）。
 - 状态：已复现（已完全确认）
 - 修法方向：改 `plugin/scripts/lib.mjs:147-152`——读模式命中「条目所在目录」时应把该目录本身也算命中（`rel === dir` 也放行）；或在 `plugin/scripts/guard.mjs:123-127` 对 glob/grep 优先按 pattern 判定、path 只作附加约束。
 - 还需要什么：无，代码路径已确定
@@ -385,7 +396,7 @@
 - 复现步骤：1) 取 `plugin/scripts/gate.mjs` 的三个正则（`INTENT` / `SIGNAL` / `SCOPE_HINT`）；2) 喂上面 18 条口语化请求；3) 观察命中数为 0。判定式见「复现步骤」的工装：`C:/Users/yang2/AppData/Local/Temp/sar-gate-regex-test.mjs`（把当前三个正则原样复刻后跑 23 条样本）。
 - 证据：父会话实测输出 —— `SUMMARY should_hit=23 missed=19 false_trigger=0`；漏判样本逐条列出（含长度）。根因两条：**① INTENT 只覆盖名词化/书面说法**（派工/组队/分工/验收/复盘），漏掉口语**动词短语**（拆一下/拆解/分头做/各做各的/同时做/谁负责/派谁/复审/评审/放到后台/几个人一起…）；**② `prompt.length > 40` 这个硬门槛把 SIGNAL 废掉了** —— SIGNAL 里的「同时/多个/各自/分别」本该接住这些说法，但中文口语指令通常只有 3~12 字。运行时侧佐证：本会话 36 个带 hook 注入的轮次里，gate **漏判 10 次**；**用户本轮这一句「好像还有点问题就是主动触发还有其他的你看看」（21 字）本身就是漏判样本**。另有断言缺口：回归只测了「一条长书面指令（命中）+ 一条单点提问（静默）」两个极端，**口语化编排请求一条都没测** —— 这就是漏判能长期存在的原因。
 - 状态：**已修复（v0.5.1）**
-- 修复后证据：判定抽到 `lib.mjs` 的 `judgeTriggerIntent()` 并导出（回归可 `import` 直接断言）；契约新增 **S11「触发语义」**。语料自测：A 档 23 条**漏判 0**（改前 19）、B 档 6 条误触发 0、C 档 7 条伪信号误触发 0。四组变异自检（`node .superagent/d27-mut-test.mjs`，常驻套件）：M1 回退词表 → 红 3 条；M2 恢复长度门槛 → 红 1 条；M3 去掉动作性限定 → 伪信号红 5 条；M4 常真桩对照 → B 档 6 条 + C 档 7 条全红；每组均核对 sha256 落盘与 `node --check`。九套回归对仓库副本与安装副本均 0 FAIL。
+- 修复后证据：判定抽到 `lib.mjs` 的 `judgeTriggerIntent()` 并导出（回归可 `import` 直接断言）；契约新增 **S11「触发语义」**。语料自测：A 档 23 条**漏判 0**（改前 19）、B 档 6 条误触发 0、C 档 7 条伪信号误触发 0。四组变异自检（`node tests/d27-mut-test.mjs`，常驻套件）：M1 回退词表 → 红 3 条；M2 恢复长度门槛 → 红 1 条；M3 去掉动作性限定 → 伪信号红 5 条；M4 常真桩对照 → B 档 6 条 + C 档 7 条全红；每组均核对 sha256 落盘与 `node --check`。九套回归对仓库副本与安装副本均 0 FAIL。
 - 修法方向：① INTENT 补口语动词短语；② 去掉 `length > 40` 硬门槛，改用「信号词 + 动作性」判定；③ 判定函数从 `gate.mjs` 抽到 `lib.mjs` 导出，使回归能**直接 import 断言**；④ 未命中时**条件式**兜底注入一行极短提示（仅当「roster 存在且有专项成员且该成员有实战记录」时），对单点小改的工作区零成本；⑤ 载荷解析失败**不静默**（`parseInput` → `parseInputStrict` 或留痕）。契约侧新增「触发语义」条款（父会话落）。
 - 还需要什么：需要平台侧确认 UserPromptSubmit 的派发时机与载荷形状是否稳定 —— 若载荷字段名变化，`prompt` 取空会导致「永远不命中」的静默失效（与 D-26 同族的「触发链路」问题）。
 - 来源：用户反馈「主动触发还有其他的」后的定点排查 ｜ 严重度：P0 ｜ 归属层：机制层
@@ -397,7 +408,7 @@
 - 复现步骤：1) 父会话派出一个 worker；2) 用 `task_stop` 取消它；3) 读台账 `PLUGIN_DATA/dispatches.json`，该条 `state` 仍是 `active`；4) 在 TTL 内继续派满 6 个，第 7 个被「在飞派工已达上限」拒绝。
 - 证据：本轮实测 —— 派工 `dsp_mwab22ks_4iccn9`（`sa-mechanism-fix`）被父会话 `task_stop` 取消后，台账 `state` 长时间停在 `active`，父会话只能靠**一次性临时脚本**手工调 `markDispatchAborted` 才把名额拿回来（`end_reason=parent_cancelled_task_no_delivery`）。**机制本身没有可用入口** —— `markDispatchAborted` 虽已从 lib.mjs 导出，但没有任何 CLI / 脚本 / 文档告诉调用方怎么用；契约 S6.2 第 2 条的三条路（正常结束 / 超时兜底 / 读时自愈）**没有一条覆盖取消场景**。
 - 状态：**已修复（v0.5.2）**
-- 修复后证据：新增 `plugin/scripts/release-slot.mjs`（契约 S6.2 第 5 条）+ 常驻回归 `.superagent/dispatch-release-test.mjs`（24 条断言，全绿，含「worker 不能调释放入口」这条安全属性）；入口 `node scripts/release-slot.mjs '{"dispatch_id":"dsp_xxx"}'` 或按 `parent_session_id` 批量释放。
+- 修复后证据：新增 `plugin/scripts/release-slot.mjs`（契约 S6.2 第 5 条）+ 常驻回归 `tests/dispatch-release-test.mjs`（24 条断言，全绿，含「worker 不能调释放入口」这条安全属性）；入口 `node scripts/release-slot.mjs '{"dispatch_id":"dsp_xxx"}'` 或按 `parent_session_id` 批量释放。
 - 修法方向：① 契约 S6.2 补第 5 条：取消场景由**发起方显式释放**，入口由插件自带；② 释放只把 `active` 翻成 `aborted`，`done` / `aborted` 的记录一个字节都不动；③ 目标不存在或台账读不出来时**报错退出**，不许静默成功 —— 否则调用方以为名额放掉了，实际还在占着；④ 台账条目里**没有子会话 id**，所以「自动探测子会话是否还活着」不可行，能自动拿到的只有终止事件而取消场景没有终止事件 —— 这条写进契约，免得下次又去做自动探测。
 - 还需要什么：若平台将来提供「派工被取消」的事件（类似 SubagentStop 的取消态），应改为**事件驱动自动回收**，本入口退化为兜底。当前无平台事件可用。
 - 来源：本轮「主动触发还有其他的」定点排查中实测暴露 ｜ 严重度：P2 ｜ 归属层：机制层
@@ -408,21 +419,149 @@
 - 复现步骤：1) 设 PLUGIN_DATA=<运行时的 plugin-data 目录>；2) 用非法 JSON 喂 `plugin/scripts/gate.mjs`；3) 去 `PLUGIN_DATA/hooks/super-agent-router/gate-trace.jsonl` 找 —— 没有；4) 去 `PLUGIN_DATA/hooks/super-agent-router/hooks/super-agent-router/gate-trace.jsonl` 找 —— 在。
 - 证据：本轮活体实测 —— 坏载荷跑完，实际落盘路径为 `C:\Users\yang2\.minimax\v2\plugin-data\hooks\super-agent-router\hooks\super-agent-router\gate-trace.jsonl`。
 - 状态：**已修复（v0.5.2）**
-- 修复后证据：写入目录改为「PLUGIN_DATA 已是插件专属目录时直接写它，否则才补一层」；新增回归断言（痕迹必须落在 PLUGIN_DATA 下一层，且不得产生多套一层的怪目录），挂在 `.superagent/e2e-test.mjs`。
+- 修复后证据：写入目录改为「PLUGIN_DATA 已是插件专属目录时直接写它，否则才补一层」；新增回归断言（痕迹必须落在 PLUGIN_DATA 下一层，且不得产生多套一层的怪目录），挂在 `tests/e2e-test.mjs`。
 - 修法方向：目录拼接不能假设「PLUGIN_DATA 是插件根」—— 它在不同上下文里含义不同（运行时=插件专属目录；测试里=整个 plugin-data 根），所以要**按目录名判断**而不是无条件拼接。
 - 还需要什么：无。
 - 来源：本轮 D-28 之后的链路活体复查 ｜ 严重度：P3 ｜ 归属层：机制层
 
 ### D-30
-- 触发条件：`.superagent/d27-mut-test.mjs` 的 `copyPlugin()` 用**固定**临时目录名（`%TEMP%/sar-d27mut-<tag>`），拷贝前先 `fs.rmSync` 清空。
+- 触发条件：`tests/d27-mut-test.mjs` 的 `copyPlugin()` 用**固定**临时目录名（`%TEMP%/sar-d27mut-<tag>`），拷贝前先 `fs.rmSync` 清空。
 - 影响：**并发跑会假红**。两个实例同时跑全量回归（父会话与独立验收方各跑一份）时，后一个把前一个正在用的副本删掉重拷，前一个的 e2e 于是读到半拷状态，「基线副本全绿」这条断言报红 —— 而实现其实没问题。**会给假 FAIL 的测试比没有测试更危险**：它教人忽略红灯，下次真出问题时也会被当成老样子跳过。
-- 复现步骤：1) 同时起两个 `node .superagent/d27-mut-test.mjs`；2) 观察其中一个报「基线副本全绿 :: FAIL …」。
+- 复现步骤：1) 同时起两个 `node tests/d27-mut-test.mjs`；2) 观察其中一个报「基线副本全绿 :: FAIL …」。
 - 证据：本轮实测 —— 父会话与验收方同时跑 `--all`，安装副本那份 d27-mut-test 报 `FAIL D-27 变异自检·基线副本全绿 :: FAIL 「搞定了，测试通过」被拦 | FAIL 条目缺字段时 block 并指明缺哪项 | FAIL 条目缺统计行时 block` —— 这三条是 **watchdog** 断言，与 D-27 判定毫无关系，正是被抹掉副本的受害者。修复后两个实例同时跑均 `>>> D27MUT ALL PASS`，干净复跑 exit 0。
 - 状态：**已修复（v0.5.2）**
 - 修复后证据：`copyPlugin()` 改用 `fs.mkdtempSync` 生成独立目录，退出时统一 `cleanup()` 回收；并发双跑实测均全绿。
 - 修法方向：**任何测试工装的工作目录都必须唯一** —— 固定目录名 + 先删后拷 = 并发下互相踩。临时目录一律走 `mkdtempSync`（全仓复查：其余九套本来就用 `mkdtempSync`，只有这一套是固定名）。
 - 还需要什么：无。
 - 来源：本轮安装副本回归出现的假红，顺藤摸瓜 ｜ 严重度：P3 ｜ 归属层：机制层
+
+### D-31
+- 触发条件：派工 SCOPE 里出现 `.superagent/lessons/` 或 `.superagent/methods/` 下的条目（目录或文件都算）。
+- 影响：读模式按「条目所在目录树」放宽 ⇒ worker 能读到**兄弟成员的错题本全文**与 **Router 私有账 `_router.md`**（实测 94 行未被拦）。方向是「教训被窃取而非分发」—— 用户担心的「成员互相篡位」正是这条。
+- 复现步骤：1) 派一条 SCOPE 含 `.superagent/lessons/` 的工；2) worker read `.superagent/lessons/sa-orchestration-audit.md`；3) 未被拦，兄弟成员的规则全文到手。
+- 证据：`sa-context-trace` 交付报告 `docs/audit/context-sharing.md`（CS-02/CS-03，本轮独立审计实测复现）。
+- 状态：**已修复（v0.5.4）** —— `dispatch.mjs` 闸门 1b 拒派；成员自己那份由 guard 的 `exactPaths`（mode=exact）单独放行。
+- 修法方向：私有记忆目录不得进 SCOPE；需要别人历史就走「Router 转写进 brief」。
+- 还需要什么：无。
+- 来源：本轮验证轮 A 路 ｜ 严重度：P1 ｜ 归属层：机制层
+
+### D-32
+- 触发条件：任何需要 Router 参考自己历史教训的场合。
+- 影响：编排层的教训无处可去 —— 每份 brief 各写各的模板、编号各自从 01 开始，正是 `_router.md` 里 RT-02/RT-03 记的同型问题。契约 S9 与 `references/review.md` 都写着「由 SessionStart 注入 Router 上下文」，**代码从未实现**：文档声称已注入，实现零回流。
+- 复现步骤：1) 读 `references/contract.md` 的 S9 与 `references/review.md` 相关段 → 都写着注入；2) `grep readRouterLessons path=plugin/scripts/` → 当时零命中；3) SessionStart 注入内容里没有任何编排层教训。
+- 证据：`sa-context-trace` 报告 CS-04（文档与代码不符）；`plugin/scripts/lessons.mjs` 现已有 `readRouterLessons()`。
+- 状态：**已修复（v0.5.4）** —— Router 私有账用 S1 七字段模板，不能复用抽「- **规则**：」的那条正则，故单开抽取函数。
+- 修法方向：编排层与成员层各有一本错题本，回流通道也各有一条。
+- 还需要什么：无。
+- 来源：本轮验证轮 A 路 ｜ 严重度：P2 ｜ 归属层：契约层
+
+### D-33
+- 触发条件：worker 开工前想知道目标成员的「实战记录」。
+- 影响：`references/scope.md` 写「实战记录注入给 worker」，代码从不注入 —— worker 拿不到履历，只拿得到教训。属**文档声称已实现、实际未实现**。
+- 复现步骤：1) 读 `references/scope.md` 的实战记录段 → 写着注入给 worker；2) `dispatch.mjs` 只把 lessons 写进 brief，records 只在父会话侧汇总。
+- 证据：`sa-context-trace` 报告 CS-05；README 的表述本来就是对的（履历是匹配时给 Router 的参考）。
+- 状态：**已修复（v0.5.4）** —— 按实际实现改写 scope.md。
+- 修法方向：分工要写清：worker 开工前需要**教训**，Router 匹配时需要**履历**。
+- 还需要什么：无。
+- 来源：本轮验证轮 A 路 ｜ 严重度：P3 ｜ 归属层：契约层
+
+### D-34
+- 触发条件：子代理撞到 scope 墙被拒。
+- 影响：**没有恢复通道**。父会话只剩两个选择：改 brief 重新派工（重开一次派工，浪费名额与上下文），或者靠 worker 自己汇报才知道它卡在哪。本轮实测三名子代理（两名专项成员 + 验收方）都撞过这堵墙，父会话要靠 `task_append` 人工补口径才救回来 —— 机制在关键处靠人肉救场。
+- 复现步骤：1) 派一条 SCOPE 不含目标路径的工；2) worker 访问目标路径被拒；3) 父会话查不到「它到底想访问什么」，只能等 worker 汇报或猜。
+- 证据：本轮三路验证的实测（A 路、C 路报告正文均记有撞墙经过）。
+- 状态：**已修复（v0.5.4）** —— 越界自动记账（`scope_requests[]`）+ `scope-amend.mjs` 一键批准；契约 S13.1/S13.2。
+- 修法方向：自动的是**发现与记账**，批准权在父会话 —— 自动批准等于让被约束者自己决定边界。
+- 还需要什么：无。
+- 来源：用户诉求「子代理的权限有问题」 ｜ 严重度：P1 ｜ 归属层：机制层
+
+### D-35
+- 触发条件：给成员派一个范围较大的活。
+- 影响：权限只有「逐路径白名单」一档。派大活要把每个路径都枚举出来，写漏一个就撞墙；机制里**根本没有「提权」这个动作** —— 用户要「把子代理的权限放开」时，机制只能靠人改 brief 重派。
+- 复现步骤：1) 想让某成员在项目内自由读写；2) 机制里没有对应命令，只能逐条 `--dispatch --add` 或改 SCOPE 重新派工。
+- 证据：本轮用户诉求原文；`scope-amend.mjs` 初版只有逐条扩权，无等级概念。
+- 状态：**已修复（v0.5.4）** —— 权限等级 tier（`scoped` / `full`），契约 S13.3；full 仍不放开 `.superagent/`、工作区外路径与账号级不可逆动作。
+- 修法方向：**每个成员都平等** —— 任何成员都可被管理员提权；但提权动作不在被约束者手里（否则授权模型当场被拆掉）。
+- 还需要什么：无。
+- 来源：用户诉求「把子代理的权限放开到自动审核」 ｜ 严重度：P1 ｜ 归属层：机制层
+
+### D-36
+- 触发条件：派工 SCOPE 里出现 `.superagent/` 下的**单个文件**条目（最常见的是 `ro: .superagent/roster.json`）。
+- 影响：两条。① 读范围覆盖整棵目录树 —— 读模式对**文件条目**取「它所在的目录」当树根，所以 `ro: .superagent/roster.json` 的读范围是整个 `.superagent/`，能读到兄弟成员的错题本全文与方法论全文（D-31 只封了两个目录，这个口子照样漏）。② 写权限能改 `roster.json` 里的权限等级 ⇒ **自己给自己提权**。
+- 复现步骤：1) 派一条 SCOPE 含 `ro: .superagent/roster.json` 的工；2) worker read `.superagent/lessons/<别人>.md` → 未被拦；3) worker write `.superagent/roster.json` → 若被授权即可把自己改成 full。
+- 证据：本轮实现时对照 `lib.mjs` 的 `inScope` 读模式 treeRoot 规则得出；实测见 `tests/scope-amend-test.mjs` 的「派工不得覆盖 .superagent/」断言。
+- 状态：**已修复（v0.5.4）** —— 派工闸门 1c 按**三种形态**分判：目录条目拒派、可写条目拒派、只读文件条目允许但**精确生效**（`inScope` 读模式遇 `.superagent/` 条目跳过树根展开）；私有记忆目录（lessons / methods）一律拒派（闸门 1b）；guard 另加第二道防线（brief 直接建边界时自己封）；full 等级也把这块挖掉。
+- 修法方向：读模式按目录树放宽这条规则没法改（它是 S2 的既定语义），所以只能在**条目粒度**上分形态判 —— 一刀切拒派会把「读编排层状态文件」也堵死，一刀切放行会把兄弟成员的错题本漏出去。
+- 还需要什么：无。
+- 来源：本轮实现时自查 ｜ 严重度：P1 ｜ 归属层：机制层
+
+### D-37
+- 触发条件：账号里某成员已被删除（或从未创建），而 `.superagent/roster.json` 仍有其条目。
+- 影响：派工被「正常」登记（`state: active`），目标不存在 → 子会话不启动 → ① 占用一个并发名额与一个累计名额；② **同 SCOPE 的其他正常派工被「组队冲突」误拦**；③ 错题本与履历照常注入 brief，外观完全正常 ⇒ **静默失效**，最长 2 小时。
+- 复现步骤：1) 让名录里某成员在账号侧不存在；2) 按 `routing.md` 匹配流程派工给它；3) 台账写入成功，`task` 调用因成员不存在而失败；4) 再派一条 SCOPE 重叠的工 → 被「组队冲突」拒。
+- 证据：`docs/audit/member-persistence.md` §7.2 MP-01（读码 + 全仓检索：`plugin/scripts/` 里没有任何脚本查询账号成员表）。
+- 状态：**待修** —— 修法方向：派工写台账**之前**校验目标成员存在（账号成员落盘在 `~/.minimax/agents/<name>/`，内置成员在 `~/.minimax/agents/.builtin/<name>/`），不存在即 deny；名单获取做成可复用的一次调用。
+- 还需要什么：有账号级权限的会话做一次受控复现（跑 MP-01 的运行期后果），才能把「推断」升级为「已复现」。
+- 来源：C 路成员审计 ｜ 严重度：P1 ｜ 归属层：机制层
+
+### D-38
+- 触发条件：任何时候需要知道「名录里有、账号里没有」的成员时。
+- 影响：唯一能算出 stale 的代码（`roster.mjs reconcile`）① 只能手动跑 CLI，**没有任何 hook 或脚本调用它**；② 只 `stdout.write`，不写回名录、不阻断派工。名义上有陈旧检测工具，实际上陈旧成员只在 Router 自觉跑一次 list 时才可能被注意到 —— 工具存在但机制不生效。
+- 复现步骤：1) `grep "reconcile" path=plugin/scripts/` → 只命中 `roster.mjs` 自身；2) 读 `cmdReconcile` → 输出后直接 `process.exit(0)`，无持久化副作用；3) `grep "stale"` → 无下游读取。
+- 证据：`docs/audit/member-persistence.md` §7.2 MP-02。
+- 状态：**待修** —— 修法方向：把 reconcile 变成 SessionStart / 路由注入的固定一步，并让它产出**可被消费的结论**（陈旧名单随注入披露，或派工时拒绝）。
+- 还需要什么：无。
+- 来源：C 路成员审计 ｜ 严重度：P2 ｜ 归属层：机制层
+
+### D-39
+- 触发条件：任意会话直接执行账号级的**建号子命令**。
+- 影响：删除 / 改写成员被硬拦，**创建完全无闸门** ⇒ 任何会话都能往账号里塞成员，绕过 bootstrap 的造人闸门；账号成员集合与项目名录逐渐脱钩（是「名录有、账号无」的镜像面）。
+- 复现步骤：1) `grep` 账号级动作判定段 → 危险动作只含删除成员与改写成员两种子命令，无创建；2) `guard.mjs` 的危险工具名表同样只登记两条，没有创建。
+- 证据：`docs/audit/member-persistence.md` §7.2 MP-03。
+- 状态：**待修** —— 修法方向：建号纳入账号级危险动作（要求人工确认），并在 `roster.mjs register` 处补一条「该成员必须已存在于账号名单」的校验 —— 建号与登记必须成对。
+- 还需要什么：无（账号级写动作不由 worker 执行）。
+- 来源：C 路成员审计 ｜ 严重度：P2 ｜ 归属层：机制层
+
+### D-40
+- 触发条件：对 `ro:` 条目下的文件执行写通道操作。
+- 影响：拦截消息写「以下路径不在白名单内：<path>」，而**同一条消息的 SCOPE 列表里就写着 `ro: <path>`** —— 按字面读，Router 会误以为「要加白名单」，进而把一个本可安全只读执行的动作升级成**可写**授权。
+- 复现步骤：1) 在一条 SCOPE 含 `ro: plugin/scripts/roster.mjs` 的派工里执行该脚本；2) 读拦截消息：前半句列出全部 SCOPE（含这条），后半句称「不在白名单内」。
+- 证据：`docs/audit/member-persistence.md` §7.2 MP-A1（拦截原文为亲眼见过，根因为推断）。
+- 状态：**待修** —— 修法方向：拦截消息区分两种情形 ——「该路径不在白名单内」vs「该路径在白名单内但为只读条目，当前是写操作」，后者提示「去掉 `ro:` 重新派工」而不是「要加白名单」。
+- 还需要什么：无。
+- 来源：C 路成员审计 ｜ 严重度：P3 ｜ 归属层：机制层
+
+### D-41
+- 触发条件：在复合调用（`run_code` / `write`）的**载荷正文**里出现被禁账号级动作的字面形态 —— 哪怕只是被引用、被说明、被要求复现。
+- 影响：审计者写复现步骤、引用拦截原文时**报告本身被拦**；审计产出无法落盘（本轮成文时亲身触发两次），且审计者为了绕过它容易改成模糊表述 —— **正好损害「每条可复现」这条底线**。同一机制两套口径：bash 通道已升级为「命令位置」判定，复合层仍是全文正则。
+- 复现步骤：1) 在一条 SCOPE 含可写报告路径的派工里，用 `write` 写入含被禁子命令字面形态的正文；2) 观察拦截；3) 对照 `lib.mjs` 的 `detectDangerousAccountCommand`（按命令位置判定）与复合层的朴素正则 —— 口径不一致。
+- 证据：`docs/audit/member-persistence.md` §7.2 MP-A2（拦截为亲眼见过，口径不一致为推断）。
+- 状态：**待修** —— 修法方向：把复合层判定收敛到「命令位置」口径（至少对引号内 / 代码块内 / Markdown 引用内的字面量放行），并在拦截消息里说明「命中的是正文引用，不是执行动作」。
+- 还需要什么：一次对照实验（同一段正文，复合层 vs bash 通道）。
+- 来源：C 路成员审计 ｜ 严重度：P2 ｜ 归属层：机制层
+
+## 六、v0.5.4 修复状态（2026-11-10）
+
+本轮做三件事：**权限自动审核**（越界自动记账 + 一键批准）、**权限等级 tier**（成员平等，可被管理员提权）、
+以及把「成员互相篡位」的口子彻底堵上（闸门 1c）。契约新增 S13。
+
+| 编号 | 状态 | 说明 |
+|---|---|---|
+| D-31 | 已修复 | 派工闸门 1b：SCOPE 不得覆盖 `.superagent/lessons/` 与 `.superagent/methods/` |
+| D-32 | 已修复 | `lessons.mjs` 新增 `readRouterLessons()`，SessionStart 注入编排层教训（契约 S9 声称已久、代码从未实现） |
+| D-33 | 已修复 | `scope.md` 按实际实现改写：履历是匹配时给 Router 的参考，不进 worker |
+| D-34 | 已修复 | 越界自动记账（台账 `scope_requests[]`）+ `scope-amend.mjs --list/--grant/--deny/--dispatch --add`；契约 S13.1/S13.2 |
+| D-35 | 已修复 | 权限等级 tier（`scoped` / `full`），写在项目级 roster.json，提权留痕 changes.log；契约 S13.3 |
+| D-36 | 已修复 | 派工闸门 1c：`.superagent/` 下任何条目（读或写）一律拒派；full 等级同把这块挖掉 |
+| D-37 | 待修 | 派工写台账前校验目标成员是否存在（账号成员目录 `~/.minimax/agents/<name>/`，内置在 `.builtin/`） |
+| D-38 | 待修 | 把 roster reconcile 变成路由注入的固定一步，并让陈旧名单成为可被消费的结论 |
+| D-39 | 待修 | 建号纳入账号级危险动作；`roster.mjs register` 补「必须已存在于账号名单」的校验 |
+| D-40 | 待修 | 越界拦截消息区分「不在白名单内」与「在白名单内但为只读条目，当前是写操作」 |
+| D-41 | 待修 | 复合层危险词判定收敛到「命令位置」口径，对正文引用放行 |
+
+D-37~D-41 的证据与修法方向见 `docs/audit/member-persistence.md`（C 路成员审计），
+本轮只入账未修 —— 它们是**账号级 / 判定口径**类问题，改动面比本轮的三项大，
+留到下一轮按「先复核再动手」处理。
 
 ## 五、v0.5.0 修复状态（2026-11-10）
 

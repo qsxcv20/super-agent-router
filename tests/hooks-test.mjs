@@ -49,6 +49,7 @@ ok('SessionStart exit 0', ss.status === 0, 'exit=' + ss.status + ' ' + (ss.stder
 ok('SessionStart 有输出注入', (ss.stdout||'').includes('super-agent-router'), (ss.stdout||'').slice(0,120));
 ok('SessionStart 说明触发条件', (ss.stdout||'').includes('主动走编排流程'), '');
 ok('SessionStart 提示先读 roster', (ss.stdout||'').includes('roster.json'), '');
+ok('S9 SessionStart 注入编排层自己的教训', (ss.stdout||'').includes('编排层自己的历史教训') && (ss.stdout||'').includes('RT-'), (ss.stdout||'').slice(0,240));
 
 // 3b. S12：SessionStart 必须写明主 agent 的管理层定位（不做苦力）
 {

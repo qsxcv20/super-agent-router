@@ -1,5 +1,5 @@
 // 链路漏洞回归测试（v0.5.0）
-// 用法：node .superagent/chain-test.mjs
+// 用法：node tests/chain-test.mjs
 //
 // 锁住曾经真实存在的漏洞：
 //   1. 派工不写 SCOPE 时，guard 形同虚设
@@ -458,7 +458,7 @@ const dispatchRaw = (session, turn, agent, scope, extra) => hook('dispatch.mjs',
 }
 
 // ── 变异自检（可选）：把 D-20 的修复回退，验证新断言真的会变红 ──
-// 用法：$env:SAR_MUTATION='1'; node .superagent/chain-test.mjs
+// 用法：$env:SAR_MUTATION='1'; node tests/chain-test.mjs
 // 只改系统临时目录里的副本，仓库工作树零改动；跑完即删。
 //
 // 为什么是「定向回退」而不是整份换回改前文件：
@@ -496,7 +496,7 @@ if (process.env.SAR_MUTATION === '1') {
     fs.writeFileSync(wdPath, wdLines.join('\n'), 'utf8');
 
     console.log('MUTATION 副本已就绪：' + mutPlugin);
-    const r = spawnSync('node', [path.join(REPO, '.superagent', 'chain-test.mjs')], {
+    const r = spawnSync('node', [path.join(REPO, 'tests', 'chain-test.mjs')], {
       env: Object.assign({}, process.env, { SAR_PLUGIN_ROOT: mutPlugin, SAR_MUTATION: '' }),
       encoding: 'utf8', timeout: 180000, cwd: REPO
     });
@@ -524,13 +524,13 @@ if (process.env.SAR_MUTATION === '1') {
 }
 
 // ── 跨套件自检（可选）：跑另外四套回归，确认本次改动没影响它们 ──
-// 用法：$env:SAR_CROSS='1'; node .superagent/chain-test.mjs
+// 用法：$env:SAR_CROSS='1'; node tests/chain-test.mjs
 // 另外四套的测试文件不在本成员的 SCOPE 内，直接在 bash 里写它们的路径会被
 // 「按写判定」拦掉；因此由本文件在运行时拼路径再 spawn，仓库工作树零改动。
 if (process.env.SAR_CROSS === '1') {
   const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   for (const name of ['records-test', 'lessons-test', 'roster-test', 'hooks-test']) {
-    const f = path.join(REPO, '.superagent', name + '.mjs');
+    const f = path.join(REPO, 'tests', name + '.mjs');
     if (!fs.existsSync(f)) { console.log('CROSS ' + name + ' :: 套件文件不存在，跳过'); continue; }
     const r = spawnSync('node', [f], {
       env: Object.assign({}, process.env, {

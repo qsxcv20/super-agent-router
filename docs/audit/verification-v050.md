@@ -86,35 +86,35 @@
 
 ### V-08
 - 涉及对象：变异 MU1 —— guard.mjs 与 lib.mjs 整体回退到 HEAD，检验 D-01/D-02/D-03/D-04/D-14/D-16/D-22 的判据是否真被锁住。
-- 复核方式：把改前 guard.mjs、lib.mjs 写入临时副本，SAR_PLUGIN_ROOT 指向副本，跑 .superagent/guard-test.mjs。
+- 复核方式：把改前 guard.mjs、lib.mjs 写入临时副本，SAR_PLUGIN_ROOT 指向副本，跑 tests/guard-test.mjs。
 - 证据：结尾行由「>>> GUARD2 ALL PASS」变为「>>> GUARD2 FAILURES: 22」，48 条断言中 22 条转红，含 D-02 的三条（bash 目录型目标被识别并拦下、bash 目录型目标 node_modules 被拦下、console.log 这类标识符不被当成路径）、D-03 的四条（mavis 的 agent delete 被拦、mavis 的 agent update 被拦、run_code 里的写操作按写判定并被拦、run_code 里的危险操作被拦）、D-04 的四条（解析不到边界时读被拒、brief 不在前几行也能定位、transcript 读不到时 deny 且写明原因、transcript 里没有 SCOPE 行时 deny）、D-22 的两条（glob 显式 path 在读放行目录树内放行、glob 无 path 时按工作区根判定并 deny），以及 D-01/D-14/D-16 与 ro: 条目、载荷非法等断言。
 - 判定：成立
 - 说明：这 22 条断言在旧实现下变红，说明它们不是空断言；检查 1 关心的 D-02/D-03/D-04/D-22 四条都在其中。
 
 ### V-09
 - 涉及对象：变异 MU2 —— dispatch.mjs 回退到 HEAD（D-05/D-07/D-09/D-12/D-19/D-23）。
-- 复核方式：改前 dispatch.mjs 写入临时副本，跑 .superagent/chain-test.mjs。
+- 复核方式：改前 dispatch.mjs 写入临时副本，跑 tests/chain-test.mjs。
 - 证据：结尾行变为「>>> CHAIN FAILURES: 9」，43 条中 9 条转红：缺 turn_id 时不抹掉同会话的其它记录（实测旧实现只剩 1 条记录：src/d5/b.ts，正是 D-05 描述的「旧记录被整条抹掉」）、两条 scope 都在、tool_use_id 作去重键时两条记录都在（记录数=1）、SCOPE 里有解析不出的条目时拒绝派工、跨会话的写冲突被拒、台账用 routing id 而不是显示名、累计派工超限被拒、台账不再写 unscoped 字段、派工载荷不是合法 JSON 时拒绝。
 - 判定：成立
 - 说明：D-05 的去重键改造有直接的红→绿证据。
 
 ### V-10
 - 涉及对象：变异 MU3 —— watchdog.mjs 回退到 HEAD（D-11 与产出路径校验）。
-- 复核方式：改前 watchdog.mjs 写入临时副本，跑 .superagent/chain-test.mjs。
+- 复核方式：改前 watchdog.mjs 写入临时副本，跑 tests/chain-test.mjs。
 - 证据：结尾行变为「>>> CHAIN FAILURES: 3」，转红三条：搞定了，测试通过 被拦（D-11）、引用到的路径不被当成产出校验、契约条款引用不被当成声称产出的文件。改前 claimedPaths 用「norm 以 / 开头则直用，否则拼 <工作区根>/ + norm」判存在性，带盘符路径会被拼成工作区根加盘符路径，恒判不存在。
 - 判定：成立
 - 说明：D-11 与产出/引用区分两条修复有红证据；D-20 的两条断言未转红，见 V-13 与 V-27。
 
 ### V-11
 - 涉及对象：变异 MU4 —— record-gate.mjs 与 records.mjs 回退到 HEAD（D-13/D-21/D-24）。
-- 复核方式：改前 record-gate.mjs、records.mjs 写入临时副本，跑 .superagent/records-test.mjs。
+- 复核方式：改前 record-gate.mjs、records.mjs 写入临时副本，跑 tests/records-test.mjs。
 - 证据：30 条中 7 条转红：D-13 台账里不存在的验收方被拒、D-13 state=active 的验收方不被认可、D-13 台账不可用时拒绝写入、D-21 计数按段内实际条数（3 条存量 + 1 条新增 = 4）（旧口径只数出 1 条）、D-21 长前导文件里 20 条上限真的会触发、匹配阶段注入实战记录、注入时声明不改归属。
 - 判定：成立
 - 说明：D-13 的写入时校验与 D-21 的索引口径修复有直接红证据；D-24 的取样公平性体现为最后两条转红。
 
 ### V-12
 - 涉及对象：变异覆盖缺口 1 —— 工具名兜底（未登记的文件类工具名按写判定）没有任何断言锁住。
-- 复核方式：通读 .superagent/guard-test.mjs 找覆盖该规则的断言；再用活体载荷验证规则本身是否生效。
+- 复核方式：通读 tests/guard-test.mjs 找覆盖该规则的断言；再用活体载荷验证规则本身是否生效。
 - 证据：guard-test.mjs 里与 D-03 相关的断言只有 mavis 的 agent delete/agent update/非危险命令三条与 run_code 的两条，没有一条用「未登记的文件类工具名」。活体验证：tool_name=upload_file、file 指向 src/x.ts → permissionDecision=deny，理由「目标 src/x.ts 不在白名单内」，规则本身有效；但若有人把它改回放行，现有套件不会变红。
 - 判定：成立
 - 说明：这是覆盖率缺口而非实现缺陷。建议补一条断言：未登记的文件类工具名按写判定，scope 外目标必须被拦。
@@ -130,7 +130,7 @@
 ### V-14
 - 涉及对象：D-01 —— transcript 为 codex 变体时 scope 解析恒为 null，导致整段放行。
 - 复核方式：读 lib.mjs 的 readBriefFromTranscript 与 userMessageText（同时认 compatible 与 codex 两种 user 消息形状，且按「含 SCOPE: 的 user 消息」语义定位，不再用固定 8 行窗口）；再以仓库版 guard.mjs 跑 codex 变体合成 transcript。
-- 证据：实现位置为 lib.mjs 的 readBriefFromTranscript 与 userMessageText；变体样本由 .superagent/guard-test.mjs 的 makeCodexTranscript 构造（type=response_item、payload.role=user、content[].type=input_text），基线断言「codex 变体：scope 内放行」「codex 变体：scope 外 deny」全绿，MU1 回退后后者转红。
+- 证据：实现位置为 lib.mjs 的 readBriefFromTranscript 与 userMessageText；变体样本由 tests/guard-test.mjs 的 makeCodexTranscript 构造（type=response_item、payload.role=user、content[].type=input_text），基线断言「codex 变体：scope 内放行」「codex 变体：scope 外 deny」全绿，MU1 回退后后者转红。
 - 判定：成立
 - 说明：D-01 的 codex 变体解析已修复并被断言锁住；失败语义也从「放行」改成「deny 并写明原因」。
 

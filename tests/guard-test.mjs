@@ -790,7 +790,7 @@ ok('glob 显式 path 在读放行目录树内放行', w('glob', { pattern: '**/*
 }
 
 // ── 合成载荷探针（可选，人工取证用）────────────────────
-// 用法：$env:SAR_PROBE='1'; node .superagent/guard-test.mjs
+// 用法：$env:SAR_PROBE='1'; node tests/guard-test.mjs
 // 打印 5 个合成载荷的真实判定输出；「放行」= stdout 为空（没有任何输出）。
 if (process.env.SAR_PROBE === '1') {
   const probes = [
@@ -810,7 +810,7 @@ if (process.env.SAR_PROBE === '1') {
 }
 
 // ── 变异自检（可选）：把实现回退到改前版本，验证新断言真的会变红 ──
-// 用法：$env:SAR_MUTATION='1'; node .superagent/guard-test.mjs
+// 用法：$env:SAR_MUTATION='1'; node tests/guard-test.mjs
 // 只改系统临时目录里的副本，仓库工作树零改动；跑完即删。
 if (process.env.SAR_MUTATION === '1') {
   const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -822,7 +822,7 @@ if (process.env.SAR_MUTATION === '1') {
     const old = execFileSync('git', ['show', 'HEAD:plugin/scripts/guard.mjs'], { cwd: REPO, encoding: 'utf8' });
     fs.writeFileSync(path.join(mutPlugin, 'scripts', 'guard.mjs'), old, 'utf8');
     console.log('MUTATION 回退：副本 scripts/guard.mjs <- HEAD 版本（' + mutPlugin + '）');
-    const r = spawnSync('node', [path.join(REPO, '.superagent', 'guard-test.mjs')], {
+    const r = spawnSync('node', [path.join(REPO, 'tests', 'guard-test.mjs')], {
       env: Object.assign({}, process.env, { SAR_PLUGIN_ROOT: mutPlugin, SAR_MUTATION: '' }),
       encoding: 'utf8', timeout: 180000, cwd: REPO
     });
@@ -856,7 +856,7 @@ if (process.env.SAR_MUTATION === '1' || process.env.SAR_MUTATION === '2') {
     gLines[idx] = "    return { mode: 'write', targets: extractPathTokens(code), raw: code };";
     console.log('MUTATION-B 变异后 guard.mjs 第 ' + (idx + 1) + ' 行: ' + gLines[idx].trim());
     fs.writeFileSync(gPath, gLines.join('\n'), 'utf8');
-    const r = spawnSync('node', [path.join(REPO, '.superagent', 'guard-test.mjs')], {
+    const r = spawnSync('node', [path.join(REPO, 'tests', 'guard-test.mjs')], {
       env: Object.assign({}, process.env, { SAR_PLUGIN_ROOT: mutPlugin, SAR_MUTATION: '' }),
       encoding: 'utf8', timeout: 180000, cwd: REPO
     });

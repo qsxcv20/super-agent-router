@@ -49,7 +49,7 @@
   1. 载荷 A：`{session_id:'c1', agent_name:'w', prompt:'SCOPE: src/a.ts'}`（不带 turn_id）→ 台账出现 1 条记录。
   2. 载荷 B：`{session_id:'c1', agent_name:'w', prompt:'SCOPE: src/b.ts'}`（同样不带 turn_id）→ 台账里只剩 B 一条，A 被抹掉。
   3. 读 `dispatches.json`：c1 的记录数为 1 而非 2；此时再派 `SCOPE: src/a.ts` 不会被判重叠。
-- 证据：`plugin/scripts/dispatch.mjs:30`（tid 取值）、`plugin/scripts/dispatch.mjs:95-100`（去重过滤）、`plugin/scripts/dispatch.mjs:102-116`（写入）。`.superagent/chain-test.mjs` 的 `dispatch()` 辅助函数始终带 `turn_id`，因此这条路径没有被任何回归测试覆盖。
+- 证据：`plugin/scripts/dispatch.mjs:30`（tid 取值）、`plugin/scripts/dispatch.mjs:95-100`（去重过滤）、`plugin/scripts/dispatch.mjs:102-116`（写入）。`tests/chain-test.mjs` 的 `dispatch()` 辅助函数始终带 `turn_id`，因此这条路径没有被任何回归测试覆盖。
 - 状态：已复现
 - 修法方向：改 `plugin/scripts/dispatch.mjs:95-100` 的去重键——缺 `turn_id` 时退化为 `parent_session_id + agent + tool_use_id`（`tool_use_id` 已在 `dispatch.mjs:106` 写入但从未被读取，正好可作唯一键），不要把空串当成「同一个 turn」。
 
@@ -91,8 +91,8 @@
 - 影响：`claimsDone`（`watchdog.mjs:94`）命中「搞定」；`hasEvidence`（`watchdog.mjs:95`）命中「测试」→ `watchdog.mjs:96` 的拦截分支不触发；`claimedPaths` 又因文本里没有产出动词而返回空 → `watchdog.mjs:115` 放行。watchdog 头部注释（「早期版本只做字面关键词匹配——『搞定了』这种话能蒙混过关……现在改为：先判声明，再把声明里提到的文件路径真实校验一遍」）声称的修复并不成立：加两个关键词即可完全绕过完成度校验。
 - 复现步骤：
   1. `watchdog.mjs` 载荷 `{last_assistant_message: '搞定了，测试通过'}` → stdout 为空。
-  2. 对照：`{last_assistant_message: '搞定了'}` → 被 block（`.superagent/chain-test.mjs:80-87` 锁的就是这一条）。
-- 证据：`plugin/scripts/watchdog.mjs:9-12`（注释声称的修复）、`plugin/scripts/watchdog.mjs:94-96`（判定实现）、`plugin/scripts/watchdog.mjs:105-115`（文件校验分支未触发）；`.superagent/chain-test.mjs:80-87` 只锁了「搞定了」单个词，未覆盖「搞定了 + 证据关键词」。
+  2. 对照：`{last_assistant_message: '搞定了'}` → 被 block（`tests/chain-test.mjs:80-87` 锁的就是这一条）。
+- 证据：`plugin/scripts/watchdog.mjs:9-12`（注释声称的修复）、`plugin/scripts/watchdog.mjs:94-96`（判定实现）、`plugin/scripts/watchdog.mjs:105-115`（文件校验分支未触发）；`tests/chain-test.mjs:80-87` 只锁了「搞定了」单个词，未覆盖「搞定了 + 证据关键词」。
 - 状态：已复现
 - 修法方向：改 `plugin/scripts/watchdog.mjs:95` 的 `hasEvidence`——证据必须是**可核验的具体物**（存在的文件路径 / 带行号的引用 / 可复现的命令与输出），而不是「测试/运行/结果」这类描述性词；建议收敛为「至少一个通过 `claimedPaths` 存在性校验的路径」或「一段命令输出」。
 
@@ -145,7 +145,7 @@
 - 复现步骤：
   （本审计自身的实测，无需构造）
   1. 本单 SCOPE 只列了 `.superagent/` 下的 4 个 `.mjs` 文件。
-  2. 用 `read` 读 `.superagent/roster.json`、`.superagent/STATUS.md`、`.superagent/hooks-test.mjs`、`.superagent/methods/sa-plugin-release.md`——**全部读取成功**，尽管这些文件都不在 SCOPE 里。
+  2. 用 `read` 读 `.superagent/roster.json`、`.superagent/STATUS.md`、`tests/hooks-test.mjs`、`.superagent/methods/sa-plugin-release.md`——**全部读取成功**，尽管这些文件都不在 SCOPE 里。
   3. 结论：读放行按「条目所在目录树」生效，不是按「条目本身」。
 - 证据：`plugin/scripts/guard.mjs:111-118`（拼两个具体文件）、`plugin/scripts/lib.mjs:129-155`（`inScope`）、`plugin/scripts/lib.mjs:147-152`（读模式用 `e.slice(0, e.lastIndexOf('/'))` 取父目录做前缀）；实测证据见复现步骤（本审计读上述文件均成功，工具未拦截）。
 - 状态：已复现
@@ -170,7 +170,7 @@
   2. `read` 目标 `src/app/session.ts` → 放行。
   3. `glob` 目标 `{path:'src/app', pattern:'*.ts'}` → deny（提示「目标 src/app 不在白名单内」）。
   4. 注意：仓库现有的 4 份回归测试只覆盖不带 `path` 的 glob 调用（见证据），本条为构造式复现，未被任何回归测试锁住。
-- 证据：`plugin/scripts/guard.mjs:123-129`（目标取值）、`plugin/scripts/lib.mjs:129-155`（`inScope` 读模式分支）、`plugin/scripts/guard.mjs:149-153`（最终 deny）；`.superagent/e2e-test.mjs:127-128`（`{pattern:'src/app/*.ts'}` 放行 / `{pattern:'**/*.ts'}` 拦截）与 `.superagent/guard-test.mjs:97-102`（同一组用例）只锁了「pattern 不带 path」的情形，未覆盖带 `path` 的调用；`.superagent/chain-test.mjs` 全文 `glob|grep|pattern` 零命中，不含任何 glob 用例（原引用 `:157-166` 举证不实，已删除）。
+- 证据：`plugin/scripts/guard.mjs:123-129`（目标取值）、`plugin/scripts/lib.mjs:129-155`（`inScope` 读模式分支）、`plugin/scripts/guard.mjs:149-153`（最终 deny）；`tests/e2e-test.mjs:127-128`（`{pattern:'src/app/*.ts'}` 放行 / `{pattern:'**/*.ts'}` 拦截）与 `tests/guard-test.mjs:97-102`（同一组用例）只锁了「pattern 不带 path」的情形，未覆盖带 `path` 的调用；`tests/chain-test.mjs` 全文 `glob|grep|pattern` 零命中，不含任何 glob 用例（原引用 `:157-166` 举证不实，已删除）。
 - 状态：已复现
 - 修法方向：改 `plugin/scripts/lib.mjs:147-152`——读模式命中「条目所在目录」时应把该目录本身也算命中（`rel === dir` 也放行）；或在 `plugin/scripts/guard.mjs:123-127` 对 glob/grep 优先按 pattern 判定、path 只作附加约束。
 

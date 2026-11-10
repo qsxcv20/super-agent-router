@@ -46,6 +46,29 @@ export function countEntries(name) {
   return m ? m.length : 0;
 }
 
+// Router 私有账（.superagent/lessons/_router.md）的条目用的是**契约 S1 的 7 字段模板**
+// （触发条件 / 影响 / 复现步骤 / 证据 / 状态 / 修法方向 / 还需要什么），
+// 不是成员错题本那套 4 字段格式 —— 所以 readLessons() 的「- **规则**：」正则对它**一条都抽不出来**。
+// 编排层的教训因此一直零回流：SessionStart 从没注入过它，父会话每份 brief 各写各的模板。
+// 这里按 S1 模板抽「编号 + 修法方向」—— 修法方向是能直接执行的一句判断。
+export function readRouterLessons() {
+  let raw;
+  try { raw = fs.readFileSync(lessonsPath('_router'), 'utf8'); } catch { return []; }
+  const out = [];
+  for (const b of raw.split(/^###\s+/m).slice(1)) {
+    const id = (b.match(/^([A-Za-z0-9_-]+)/) || [])[1] || '';
+    if (!id) continue;
+    const fix = (b.match(/^- 修法方向：\s*(.+)$/m) || [])[1] || '';
+    const trigger = (b.match(/^- 触发条件：\s*(.+)$/m) || [])[1] || '';
+    out.push({
+      id,
+      fix: fix.slice(0, 240),
+      trigger: trigger.slice(0, 160)
+    });
+  }
+  return out;
+}
+
 // 实战记录（履历）：写在方法论文件的「实战记录」段里。
 // 镜像关系：错题本记「栽过哪」（失败，下次前置），
 //           实战记录记「做成过什么」（成功，下次匹配更准）。

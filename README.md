@@ -116,12 +116,12 @@ MCode 会自动扫描本地插件目录，无需重启。
 ### 开发者
 
 ```bash
-node .superagent/e2e-test.mjs      # Hook 契约
-node .superagent/roster-test.mjs   # 造人纪律
-node .superagent/lessons-test.mjs  # 错题本纪律
-node .superagent/guard-test.mjs    # 越界判定
-node .superagent/scope-test.mjs    # 作用域边界
-node .superagent/records-test.mjs  # 履历机制
+node tests/e2e-test.mjs      # Hook 契约
+node tests/roster-test.mjs   # 造人纪律
+node tests/lessons-test.mjs  # 错题本纪律
+node tests/guard-test.mjs    # 越界判定
+node tests/scope-test.mjs    # 作用域边界
+node tests/records-test.mjs  # 履历机制
 ```
 
 ---

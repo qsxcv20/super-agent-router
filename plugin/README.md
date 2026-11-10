@@ -265,6 +265,63 @@ SCOPE: ro: plugin/scripts/, docs/audit/report.md
 - `ro:` 条目**永不**授予写权限 —— 写同一个文件也会被拦。
 - `ro:` 条目**不参与**派工的写冲突检测 —— 两个人都只读同一个目录不算冲突。
 
+
+## 权限等级：给成员更多权限，但不靠自觉
+
+逐路径白名单对「派一个大活」太琐碎。这个插件给每个成员一条**权限等级**（tier）：
+
+| 等级 | 含义 |
+|---|---|
+| `scoped`（默认） | 逐路径白名单；白名单外一律拦，越界自动记账进待审清单 |
+| `full` | 项目工作区内自由读写，不必逐路径枚举 |
+
+**每个成员都是平等的** —— `full` 不是某些成员的特权，任何成员都可以被管理员提权。
+提权这个动作在管理员手里：
+
+```powershell
+node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\scope-amend.mjs" --tiers
+node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\scope-amend.mjs" --tier full --agent sa-gate-integrity --approver router
+```
+
+提权写进 `.superagent/roster.json`，留痕 `.superagent/changes.log`。
+收回就是把 `full` 换回 `scoped`（同一条命令，改一个词）。
+
+**`full` 不等于无限权限**，这三条照旧生效：
+
+1. `.superagent/` 编排层私有状态目录除外 —— 那是成员互相篡位、自己给自己提权的战场；
+2. 工作区之外的路径仍然拦，并自动记账待审；
+3. 账号级 / 对外不可逆动作（删成员、改成员、部署、发布）照旧硬拦。
+
+## 子代理撞墙了怎么办：自动审核，一键批准
+
+子代理撞到 scope 墙时，护栏**自动**把「它想访问什么、被拒了什么」记进台账 ——
+不用等 worker 汇报。父会话一条命令看待审清单：
+
+```powershell
+node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\scope-amend.mjs" --list
+```
+
+批准一条（读请求只授读，写仍然拦）：
+
+```powershell
+node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\scope-amend.mjs" --grant req_xxx --approver router
+```
+
+拒绝一条：
+
+```powershell
+node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\scope-amend.mjs" --deny req_xxx --approver router --reason "不该读"
+```
+
+直接给某个仍在飞的派工加条目：
+
+```powershell
+node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\scope-amend.mjs" --dispatch dsp_xxx --add src/app/ --approver router
+```
+
+批准**必须**落在仍在飞的派工上 —— 派工结束了就拒绝扩权（事后再补权限没有意义，重新派工即可）。
+自动的是**发现与记账**，批准权始终在管理员手里：让被约束者自己决定边界等于拆掉授权模型。
+
 ## brief 是 worker 唯一的协议载体
 
 这条是运行时事实，不是什么设计偏好：

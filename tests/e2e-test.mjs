@@ -1,5 +1,5 @@
 // super-agent-router 回归测试（v0.5.0）
-// 用法：node .superagent/e2e-test.mjs
+// 用法：node tests/e2e-test.mjs
 // 断言插件的 Hook 在真实 stdin/stdout 契约下的行为。
 //
 // v0.4.0 语义：派工发生在父会话，工具执行发生在子会话。
@@ -183,6 +183,30 @@ const scopeSession = 'e-task';
   const d = led.dispatches.find((x) => x.parent_session_id === scopeSession);
   ok('scope 只收路径', !!d && JSON.stringify(d.scope) === JSON.stringify(['src/app.ts', 'src/util.ts']), JSON.stringify(d && d.scope));
   ok('派工记录带 dispatch_id', !!d && !!d.dispatch_id, d ? String(d.dispatch_id) : 'no-record');
+}
+
+// 2b. D-31：SCOPE 不得覆盖成员的私有记忆目录（越权授予他人记忆）
+{
+  const r = run('dispatch.mjs', {
+    hook_event_name: 'PreToolUse', tool_name: 'task', session_id: 'e-privmem1', turn_id: 'pm1',
+    tool_input: { agent_name: 'worker', prompt: 'SCOPE: ro: .superagent/lessons/\n读一下错题本' }
+  });
+  ok('D-31 覆盖错题本目录被拒', r.out.includes('deny') && r.out.includes('私有记忆'), r.out.slice(0, 200));
+}
+{
+  const r = run('dispatch.mjs', {
+    hook_event_name: 'PreToolUse', tool_name: 'task', session_id: 'e-privmem2', turn_id: 'pm2',
+    tool_input: { agent_name: 'worker', prompt: 'SCOPE: ro: .superagent/methods/\n读方法论' }
+  });
+  ok('D-31 覆盖方法论目录同样被拒', r.out.includes('deny'), r.out.slice(0, 160));
+}
+{
+  const r = run('dispatch.mjs', {
+    hook_event_name: 'PreToolUse', tool_name: 'task', session_id: 'e-privmem3', turn_id: 'pm3',
+    tool_input: { agent_name: 'worker', prompt: 'SCOPE: ro: .superagent/lessons/sa-x.md\n读某个成员的' }
+  });
+  ok('D-31 单个成员文件同样被拒（读模式没有细粒度写法：文件条目的读范围是所在目录）',
+    r.out.includes('deny'), r.out.slice(0, 200));
 }
 
 // 3. 越界拦截：worker 受自己 scope 约束，Router 不受约束

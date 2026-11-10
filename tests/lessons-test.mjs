@@ -1,7 +1,7 @@
 // 错题本闸门回归测试
-// 用法：node .superagent/lessons-test.mjs
+// 用法：node tests/lessons-test.mjs
 //   默认跑安装副本；跑仓库副本请显式指定：
-//   $env:SAR_PLUGIN_ROOT='<repo>/plugin'; node .superagent\lessons-test.mjs
+//   $env:SAR_PLUGIN_ROOT='<repo>/plugin'; node tests\lessons-test.mjs
 //
 // 验证这些事：
 //   1. 合规条目写入成功、文件格式正确

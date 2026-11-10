@@ -44,7 +44,7 @@
 - 复核方式：读 plugin/scripts/dispatch.mjs 全文（143 行）比对 30 / 95-100 / 102-116 行。
 - 证据：dispatch.mjs:30 const tid = String(input.turn_id || '');；:95-100 去重过滤条件 String(d.parent_session_id||'')===sid && String(d.turn_id||'')===tid && String(d.agent||'')===agent && (d.state||'active')==='active'；:105 写 turn_id、:106 写 tool_use_id；:114 state:'active'。载荷缺 turn_id 时 tid 为空串，与台账里同样没有 turn_id 的旧 active 记录全等命中 → 旧记录被整条删除 → 该 worker 的 scope 从台账消失 → 闸门二看不到它、闸门三少算一个。
 - 判定：成立
-- 说明：成立。附带说明：条目称 .superagent/chain-test.mjs 的 dispatch 辅助函数始终带 turn_id——这一点我未逐行核对（该文件的 turn_id 出现情况未取证），但它只是覆盖度说明，不影响本条结论。
+- 说明：成立。附带说明：条目称 tests/chain-test.mjs 的 dispatch 辅助函数始终带 turn_id——这一点我未逐行核对（该文件的 turn_id 出现情况未取证），但它只是覆盖度说明，不影响本条结论。
 
 ### V-05
 - 涉及条目：runtime-guards.md F-05（闸门二只按同一父会话比对，嵌套派工与跨会话重叠全部漏检）
@@ -69,7 +69,7 @@
 
 ### V-08
 - 涉及条目：runtime-guards.md F-08（watchdog 的关键词式证据判定可被「完成词+证据词」绕过）
-- 复核方式：读 plugin/scripts/watchdog.mjs 全文（116 行）；读 .superagent/chain-test.mjs 与 .superagent/e2e-test.mjs 的相关断言。
+- 复核方式：读 plugin/scripts/watchdog.mjs 全文（116 行）；读 tests/chain-test.mjs 与 tests/e2e-test.mjs 的相关断言。
 - 证据：watchdog.mjs:94 claimsDone 正则含「搞定」；:95 hasEvidence 正则含「测试」；:96 if (claimsDone && !hasEvidence) 才拦；:61-66 PRODUCE 动词表为 改动|新增|新建|创建|写了|生成|产出|输出|修改|替换|删除 —— 「搞定了，测试通过」不含任何产出动词 → :66 提前返回空数组 → :105 if (missing.length) 不成立 → :115 放行。测试覆盖：chain-test.mjs:83-86 只锁 last_assistant_message 为「搞定了」单句；e2e-test.mjs:104-109 锁的是「已修复。改动文件 src/app.ts，测试命令 npm test 全部通过」（含真实路径）。
 - 判定：成立
 - 说明：绕过链逐行闭合（我复核了 PRODUCE 动词表，确认「搞定了，测试通过」不含产出动词）。引用瑕疵：条目称 watchdog 头部注释在 :12-15，实际注释块为 :9-12（:12 是末行）；不影响结论。
@@ -105,7 +105,7 @@
 ### V-13
 - 涉及条目：runtime-guards.md F-13（读模式按 scope 条目的父目录放行整棵目录树）
 - 复核方式：读 lib.mjs 129-155 行与 guard.mjs 111-120 行；并在本轮做活体验证（同一会话内分别走读通道与写通道）。
-- 证据：lib.mjs:147-151 读模式 const dir = e.includes('/') ? e.slice(0, e.lastIndexOf('/')) : ''; 后按 rel.startsWith(dir + '/') 命中；guard.mjs:111-120 只把「本成员方法论 / 错题本」两个精确文件拼进 scope。活体验证：我的 SCOPE 只列了 .superagent/roster.json 与 .superagent/methods/ 下两个文件，但我成功读取了 .superagent/methods/_TEMPLATE.md、.superagent/methods/sa-plugin-release.md、.superagent/STATUS.md、.superagent/chain-test.mjs、.superagent/e2e-test.mjs、.superagent/lessons/sa-orchestration-audit.md（全部不在 SCOPE 内）；同一时刻用 bash 写通道 Get-Item .superagent/changes.log 被 guard 拦截。
+- 证据：lib.mjs:147-151 读模式 const dir = e.includes('/') ? e.slice(0, e.lastIndexOf('/')) : ''; 后按 rel.startsWith(dir + '/') 命中；guard.mjs:111-120 只把「本成员方法论 / 错题本」两个精确文件拼进 scope。活体验证：我的 SCOPE 只列了 .superagent/roster.json 与 .superagent/methods/ 下两个文件，但我成功读取了 .superagent/methods/_TEMPLATE.md、.superagent/methods/sa-plugin-release.md、.superagent/STATUS.md、tests/chain-test.mjs、tests/e2e-test.mjs、.superagent/lessons/sa-orchestration-audit.md（全部不在 SCOPE 内）；同一时刻用 bash 写通道 Get-Item .superagent/changes.log 被 guard 拦截。
 - 判定：成立
 - 说明：成立，且本次为活体复现而非仅读码——读放行按条目所在目录树生效、写通道严格按条目本身生效，两种行为在同一会话同时被观察到。
 
@@ -118,10 +118,10 @@
 
 ### V-15
 - 涉及条目：runtime-guards.md F-15（glob / grep 显式传 path 时，目录本身不在白名单 → 误拦）
-- 复核方式：读 guard.mjs 123-132 行与 lib.mjs 147-151 行；活体验证尾斜杠差异；对 .superagent/chain-test.mjs 与 .superagent/e2e-test.mjs 做 glob|grep|pattern 检索。
+- 复核方式：读 guard.mjs 123-132 行与 lib.mjs 147-151 行；活体验证尾斜杠差异；对 tests/chain-test.mjs 与 tests/e2e-test.mjs 做 glob|grep|pattern 检索。
 - 证据：guard.mjs:123-127 targetOf 优先取 tInput.path；lib.mjs:147-151 只放开「目录 + /」前缀。活体验证：grep path=plugin/scripts/（带尾斜杠）→ 放行（命中 lib.mjs 2 处）；grep path=plugin/scripts（不带尾斜杠）→ 被 guard 拦截「目标 plugin/scripts 不在白名单内」；而 read plugin/scripts/guard.mjs（同目录下的文件）→ 放行。同目录、两种结论，复现成立。
 - 判定：成立（核心结论）；条目的测试覆盖举证错误
-- 说明：核心结论成立且经活体验证。但证据引用有实质错误：.superagent/chain-test.mjs 全文检索 glob|grep|pattern 零命中，根本不存在条目引用的 157-166「只锁了 pattern 不带 path」用例；e2e-test.mjs 的 glob 用例实际在 127-128（pattern 为 src/app/*.ts 与 **/*.ts），条目引用的 105-110 是 watchdog 断言。建议改为只引 e2e-test.mjs:127-128。
+- 说明：核心结论成立且经活体验证。但证据引用有实质错误：tests/chain-test.mjs 全文检索 glob|grep|pattern 零命中，根本不存在条目引用的 157-166「只锁了 pattern 不带 path」用例；e2e-test.mjs 的 glob 用例实际在 127-128（pattern 为 src/app/*.ts 与 **/*.ts），条目引用的 105-110 是 watchdog 断言。建议改为只引 e2e-test.mjs:127-128。
 
 ### V-16
 - 涉及条目：runtime-guards.md F-16（写类工具的路径键名不匹配时取不到目标 → 直接放行）

@@ -1,7 +1,7 @@
 // 专项名录（roster）回归测试
-// 用法：node .superagent/roster-test.mjs
+// 用法：node tests/roster-test.mjs
 //   默认跑安装副本；跑仓库副本请显式指定：
-//   $env:SAR_PLUGIN_ROOT='<repo>/plugin'; node .superagent\roster-test.mjs
+//   $env:SAR_PLUGIN_ROOT='<repo>/plugin'; node tests\roster-test.mjs
 //
 // 验证这些事：
 //   1. 未写方法论文件 → 拒绝登记

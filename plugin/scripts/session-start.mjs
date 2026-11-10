@@ -10,8 +10,9 @@
 //
 // 注入内容必须短。只放「什么时候该编排 + 怎么开始」，
 // 详细的协议放在 skill 里，让模型按需加载。
-import { readStdin, parseInput } from './lib.mjs';
+import { readStdin, parseInput, readRoster, TIER_FULL } from './lib.mjs';
 import { summarizeRecordsDetailed } from './records.mjs';
+import { readRouterLessons } from './lessons.mjs';
 
 const input = parseInput(readStdin());
 
@@ -42,10 +43,47 @@ lines.push('');
 lines.push('成员记忆是**共享但隔离**的：教训、履历、方法论各归各的，派工时只注入目标成员自己的历史。');
 lines.push('发现串味（别人的教训出现在你的 brief 里、两个成员抢同一个 owns、有人改了别人的记录）按缺陷处理，改归属映射，别放着不管。');
 lines.push('');
+lines.push('');
+lines.push('每个成员都有一条**权限等级**（tier，声明在 .superagent/roster.json 里）：');
+lines.push('- scoped（默认）：逐路径白名单，白名单外一律拦，越界自动记账进待审清单；');
+lines.push('- full：项目工作区内自由读写，不必逐路径枚举；工作区外的路径仍拦并记账，账号级不可逆动作照旧硬拦。');
+lines.push('**每个成员都是平等的** —— 任何成员都可以被提权，不是某些成员的特权；');
+lines.push('但提权这个动作在管理员（你）手里：');
+lines.push('node scripts/scope-amend.mjs --tiers');
+lines.push('node scripts/scope-amend.mjs --tier full --agent <成员名> --approver router');
+lines.push('提权写进 roster.json 并留痕 .superagent/changes.log；worker 无权改自己的等级。');
+lines.push('');
 lines.push('默认成员数 = 0（不预置成员，用时现场配置）。改 typo、查 API、单点小改一律直做，不要为了用编排而用编排。');
 lines.push('（UserPromptSubmit 的粗筛可能漏判。若你判断这轮该走编排流程，直接读本 skill 的协议，不要等注入提醒。）');
 lines.push('');
 lines.push('完整协议见 skill: super-agent-router（references/ 下有 teams / routing / brief / bootstrap / review / records / scope）。');
+
+// 编排层自己的教训（Router 私有账）。
+// 以前只有「成员教训 → worker」一条通路，编排层的教训无处可去 ——
+// 于是每份 brief 各写各的模板、编号各自从 01 开始，正是 _router.md 里 RT-02/RT-03 记的同型问题。
+// 契约 S9 与 references/review.md 都写着「由 SessionStart 注入 Router 上下文」，但代码从未实现。
+const routerLessons = readRouterLessons();
+if (routerLessons.length) {
+  lines.push('');
+  lines.push('【编排层自己的历史教训（派工前先看）】');
+  for (const r of routerLessons) {
+    lines.push('- ' + r.id + (r.trigger ? '：' + r.trigger : '') +
+      (r.fix ? ' —— 修法：' + r.fix : ''));
+  }
+}
+
+// 当前被提权到 full 的成员（管理员授予，平等适用）。
+// Router 需要知道谁可以在项目内自由干活 —— 否则提权了也不会被派上活。
+const rosterNow = readRoster();
+const fullMembers = (rosterNow.ok && rosterNow.members || [])
+  .filter((m) => String((m && m.tier) || '') === TIER_FULL)
+  .map((m) => String(m.name || ''));
+if (fullMembers.length) {
+  lines.push('');
+  lines.push('【full 权限等级成员（项目内自由读写）】');
+  for (const n of fullMembers) lines.push('- ' + n);
+  lines.push('派工给他们时 SCOPE 仍要写（记录意图 + 冲突检测），但不必逐路径枚举白名单。');
+}
 
 // 实战记录摘要：让模型一开始就知道谁做成过什么
 // 名额口径与 records.mjs 默认值统一，并取 maxMembers >= MAX_ROSTER(12)（契约 S7.3 / D-24）。

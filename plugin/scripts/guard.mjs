@@ -23,12 +23,15 @@
 //
 // 第 4 条是这次改造的核心：以前「解析不到 brief / 取不到目标路径」都是 process.exit(0)，
 // 那不是「没关系」，那是越界管控整段失效而不报错（D-01 / D-02 / D-04 / D-16）。
+import path from 'node:path';
 import {
   readStdin, parseInputStrict, readLedger, writeLedger, inScope,
   findBinding, upsertBinding, readBriefFromTranscript, scopeOverlaps,
   workspaceRoot, resolveAgentKey, isPathToken, extractPathTokens,
   splitCommandTokens, isReadOnlyCommand, extractWriteTargets, hasWriteVerb,
-  DANGEROUS_COMMAND, detectDangerousAccountCommand, hasCommandSubstitution
+  DANGEROUS_COMMAND, detectDangerousAccountCommand, hasCommandSubstitution,
+  recordScopeRequest, memberTier, withinWorkspace, touchesSuperagentPath, TIER_FULL,
+  normScopeEntry
 } from './lib.mjs';
 
 const rawStdin = readStdin();
@@ -197,6 +200,12 @@ if (!binding) {
     })
     .sort((a, b) => (b.at || 0) - (a.at || 0))[0];
   if (d) binding.dispatch_id = d.dispatch_id || '';
+  // 边界 = brief 原文 ∪ **已批准扩权**。
+  // brief 是权威来源（它写清了父会话批准了什么），但台账里可能有**后来批准**的扩权 ——
+  // 那是父会话显式授权的，必须生效；否则「批准扩权」对还没发起过工具调用的 worker 无效。
+  if (d && Array.isArray(d.scope_amended) && d.scope_amended.length) {
+    binding.scope = Array.from(new Set(brief.scope.concat(d.scope_amended)));
+  }
   upsertBinding(ledger, binding);
   writeLedger(ledger);
   // 把该成员的历史教训送进 worker 上下文（D-06）：
@@ -205,6 +214,25 @@ if (!binding) {
   if (d && Number(d.lesson_count || 0) > 0 && Array.isArray(d.lessons) && d.lessons.length) {
     injected = '[super-agent-router] ' + (d.agent_key || d.agent || '该成员') + ' 的历史教训（开工前先看）：\n' +
       d.lessons.map((r, i) => (i + 1) + '. ' + r).join('\n');
+  }
+}
+
+// 私有记忆目录不得出现在 worker 的边界里（闸门 1c 的第二道防线）。
+//
+// 为什么要第二道：binding 也可以**直接从 transcript 的 brief** 建起来
+//（没有对应派工记录时）—— 那条路不经过 dispatch，闸门 1c 拦不到。
+// 漏这一道 = 兄弟成员的错题本与 Router 私有账可以被读走（D-31）。
+const PRIVATE_MEMORY_DIRS = ['.superagent/lessons', '.superagent/methods'];
+for (const e of (binding && Array.isArray(binding.scope) ? binding.scope : [])) {
+  const p = normScopeEntry(e);
+  if (!p) continue;
+  const hit = PRIVATE_MEMORY_DIRS.find((m) => p.path === m || p.path.startsWith(m + '/'));
+  if (hit) {
+    deny('[super-agent-router] 越界管控拒绝建立：本次派工的边界里含成员的私有记忆目录（' + hit + '/）。' +
+      '读模式按「条目所在目录」当树根，写进白名单等于让 worker 读到**兄弟成员的错题本全文**' +
+      '与 Router 私有账 —— 这正是「成员互相篡位」的那条路。' +
+      '被派工成员自己的方法论与错题本由 guard 按精确文件单独放行，与 SCOPE 无关；' +
+      '需要别人的历史请让 Router 转写进 brief。');
   }
 }
 
@@ -238,8 +266,62 @@ function allowedByExact(target) {
   return exactPaths.some((p) => inScope([p], target, 'exact'));
 }
 
+// ── 权限等级（契约 S13）────────────────────────────────
+//
+// tier 是**管理员授予的成员属性**，声明在项目级 .superagent/roster.json 里，
+// 由父会话改 —— worker 无权改（派工闸门 1c 封掉 .superagent/ 的写授权）。
+//
+// full 等级的语义：**项目工作区内自由读写**，不必逐路径枚举白名单。
+//   · 工作区内任何路径（读或写）→ 放行
+//   · 工作区外路径 → 仍拦，且仍自动记账进待审清单（父会话可逐条批准）
+//   · 账号级 / 对外不可逆动作 → 照旧硬拦（这与 tier 无关，是另一条线）
+//
+// 为什么不是「自动批准」：让被约束者自己决定边界 = 授权模型被拆掉。
+// 这里自动的是**发现与记账**，批准权始终在父会话手里。
+const memberName = (binding && (binding.agent_key || binding.agent)) || agentType;
+const tier = memberTier(memberName);
+const fullTier = tier === TIER_FULL;
+
 function inAllowed(target, m) {
+  // full 等级 = 项目工作区内自由读写，**但 .superagent/ 除外**。
+  // 那目录装着每个成员自己的错题本与方法论、以及权限等级名录 ——
+  // 放开它就等于让 full 成员改兄弟成员的记录、自己给自己提权，
+  // 正是「成员互相篡位」那条路。成员自己那份走 exactPaths，与本判定无关。
+  if (fullTier && withinWorkspace(target) && !touchesSuperagentPath(target)) return true;
   return inScope(scope, target, m) || allowedByExact(target);
+}
+
+// 越界拦截：除了拒绝，还要**自动记账**（权限自动审核的第一环）。
+// worker 撞墙后不必自己汇报「我要读什么、被拒了什么」——
+// 父会话查台账（scope-amend.mjs --list）就知道，并可一键批准扩权。
+//
+// 自动的是**发现与记账**；**批准权仍在父会话手里** ——
+// 让被约束者自己决定边界，等于把授权模型整个拆掉。
+function denyOutOfScope(reason, outside, mode) {
+  let reqId = '';
+  try {
+    reqId = recordScopeRequest(ledger, {
+      dispatch_id: (binding && binding.dispatch_id) || '',
+      agent: (binding && (binding.agent_key || binding.agent)) || agentType,
+      session_id: sessionId,
+      tool,
+      mode,
+      tier,
+      targets: outside
+    });
+    writeLedger(ledger);
+  } catch (e) {
+    // 记账失败也不放过越界 —— 记账只是附加信息，拒绝才是主判定。
+  }
+  let amendCmd = 'scope-amend.mjs';
+  try {
+    const root = path.dirname(path.dirname(String(process.argv[1] || '')));
+    if (root) amendCmd = path.join(root, 'scripts', 'scope-amend.mjs');
+  } catch (e) {}
+  const hint = reqId
+    ? '（已记入待审清单 ' + reqId + '：父会话可用 ' + amendCmd + ' --grant ' + reqId + ' 批准扩权）'
+    : '（越界请求未能记账：请父会话直接改 SCOPE 后重新派工）';
+  deny(reason + hint);
 }
 
 // ── 取目标 ────────────────────────────────────────────
@@ -355,16 +437,21 @@ if (tool === 'bash') {
   }
   // 写命令却一个目标都识别不出来 -> 无法验证是否越界 -> 拒绝。
   // 以前这里直接 process.exit(0)，整条写通道等于没设防（D-02）。
-  if (!got.readOnly && !targets.length && hasWriteVerb(cmd)) {
+  // full 等级成员的边界 = 工作区本身，不再需要逐路径判定；
+  // 危险命令与账号级动作在上游已经拦过，这里豁免「识别不出目标路径」这一条。
+  if (!got.readOnly && !targets.length && hasWriteVerb(cmd) && !fullTier) {
     deny('[super-agent-router] 越界拦截：命令里有写操作，但一个可判定的目标路径都识别不出来，' +
       '无法验证是否越界。命令：' + cmd.slice(0, 160) +
       '。请改成能识别出目标路径的写法，或先更新 scope 再派工。');
   }
   const outside = targets.filter((t) => !inAllowed(t, got.mode));
   if (outside.length) {
-    deny('[super-agent-router] 越界拦截：本次派工声明的 SCOPE 为 [' +
-      scope.join(', ') + ']，以下路径不在白名单内：' + outside.slice(0, 5).join(', ') +
-      '。如确需修改，先更新 scope 并重新派工，不要自行扩大范围。');
+    const boundary = fullTier
+      ? '该成员是 full 等级（项目工作区内自由读写），以下路径在**工作区之外**：'
+      : '本次派工声明的 SCOPE 为 [' + scope.join(', ') + ']，以下路径不在白名单内：';
+    denyOutOfScope('[super-agent-router] 越界拦截：' + boundary +
+      outside.slice(0, 5).join(', ') +
+      '。如确需修改，先更新 scope 并重新派工，不要自行扩大范围。', outside, got.mode);
   }
   allow(injected);
   process.exit(0);
@@ -390,8 +477,12 @@ if (outside.length === 0) {
   allow(injected);
   process.exit(0);
 }
-const reason = '[super-agent-router] 越界拦截：本次派工声明的 SCOPE 为 [' +
-  scope.join(', ') + ']，目标 ' + outside.slice(0, 5).join(', ') + ' 不在白名单内' +
-  (got.mode === 'read' ? '（读操作允许范围为 scope 所在目录树）' : '') + '。' +
-  '如确需操作，先更新 scope 并重新派工，不要自行扩大范围。';
-deny(reason);
+const reason = fullTier
+  ? '[super-agent-router] 越界拦截：该成员是 full 等级（项目工作区内自由读写），目标 ' +
+    outside.slice(0, 5).join(', ') + ' 在**工作区之外**。' +
+    '如确需操作，由父会话批准该路径后重试。'
+  : '[super-agent-router] 越界拦截：本次派工声明的 SCOPE 为 [' +
+    scope.join(', ') + ']，目标 ' + outside.slice(0, 5).join(', ') + ' 不在白名单内' +
+    (got.mode === 'read' ? '（读操作允许范围为 scope 所在目录树）' : '') + '。' +
+    '如确需操作，先更新 scope 并重新派工，不要自行扩大范围。';
+denyOutOfScope(reason, outside, got.mode);

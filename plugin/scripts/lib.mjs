@@ -59,7 +59,7 @@ export function ledgerPath() {
 }
 
 export function readLedger() {
-  const empty = { dispatches: [], bindings: [], counters: {}, readable: true, error: '' };
+  const empty = { dispatches: [], bindings: [], counters: {}, scope_requests: [], readable: true, error: '' };
   const p = ledgerPath();
   if (!p) return { ...empty, readable: false, error: '没有 PLUGIN_DATA，台账不可用' };
   try {
@@ -67,6 +67,7 @@ export function readLedger() {
     if (!Array.isArray(parsed.dispatches)) parsed.dispatches = [];
     if (!Array.isArray(parsed.bindings)) parsed.bindings = [];
     if (!parsed.counters || typeof parsed.counters !== 'object') parsed.counters = {};
+    if (!Array.isArray(parsed.scope_requests)) parsed.scope_requests = [];
     // 迁移：旧版台账记的是「发起方会话」，语义与新版不一致。
     // 旧记录一律落到 done —— 否则一次历史派工会把会话永久锁死。
     for (const d of parsed.dispatches) {
@@ -225,6 +226,9 @@ export function inScope(scope, target, mode = 'write') {
     if (mode === 'write') {
       // ro: 条目永不授予写权限 —— 以前 ro: 前缀被整条丢弃，白名单变小等于放行。
       if (parsed.readOnly) continue;
+      // .superagent/ 一律不授写权（第二道防线，派工闸门 1c 是第一道）。
+      // 理由：该目录存着成员的权限等级 —— 能写它就是能自己给自己提权。
+      if (touchesSuperagentPath(raw)) continue;
       if (exact) return true;
       // 目录条目只覆盖其「之下」的内容，不含目录本身（删掉整个目录超出授权范围）
       if (isDir && (rel.startsWith(prefix + '/') || abs.startsWith(prefix + '/'))) return true;
@@ -232,6 +236,11 @@ export function inScope(scope, target, mode = 'write') {
     }
     if (mode === 'read') {
       if (exact) return true;
+      // .superagent/ 下的条目只精确生效，**不展开目录树**。
+      // 理由：读模式对文件条目取「它所在的目录」当树根，
+      // 于是「读一个 roster.json」= 读到整个 .superagent/（含所有成员的错题本）。
+      // 目录条目同理（它的树就是整棵 .superagent/）—— 直接不匹配。
+      if (touchesSuperagentPath(raw)) continue;
       if (isDir) {
         // 目录条目：树根就是它自己，读它等于读它的树（S2.1）
         if (rel === prefix || abs === prefix) return true;
@@ -383,6 +392,82 @@ export function scopeOverlaps(a, b) {
   return scopeClash(a, b).length > 0;
 }
 
+// ── 权限等级（tier / 契约 S13）──────────────────────────
+//
+// 每个成员都有一条权限等级：
+//   scoped（默认）—— 逐路径白名单；白名单外一律拦，越界自动记账待审。
+//   full          —— 项目工作区内自由读写，不必逐路径枚举白名单。
+//
+// 为什么要有这一层：逐路径白名单对「给成员派一个大活」太繁琐 ——
+// 每个成员都平等，任何成员都可以被管理员提权到 full；
+// 但**提权动作本身必须在管理员（父会话）手里**。
+// 让被约束者自己决定边界，等于把授权模型整个拆掉 ——
+// 所以 tier 写在项目级名录里（父会话改），不给 worker 写权限。
+//
+// tier 为什么不放在派工台账里：台账是半持久的（TTL 2 小时、截断 200 条），
+// 而权限等级必须活过台账的生命周期 —— 否则提权半小时后自动失效。
+export const TIER_SCOPED = 'scoped';
+export const TIER_FULL = 'full';
+
+export function rosterFilePath(root) {
+  const base = String(root || projectRoot() || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  return base ? base + '/.superagent/roster.json' : '';
+}
+
+// 读项目级专项名录。读不到 / 解析失败都返回 ok:false —— 调用方必须据此降级。
+export function readRoster(root) {
+  const p = rosterFilePath(root);
+  if (!p) return { ok: false, members: [], path: '', error: '找不到项目根，roster.json 路径无法确定' };
+  try {
+    if (!fs.existsSync(p)) return { ok: true, members: [], path: p, missing: true };
+    const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+    const members = Array.isArray(j && j.members) ? j.members : [];
+    return { ok: true, members, doc: j, path: p, updated: String((j && j.updated) || '') };
+  } catch (e) {
+    return { ok: false, members: [], path: p, error: String((e && e.message) || e) };
+  }
+}
+
+// 某个成员的权限等级。
+// 没登记 / 名录读不到 / 字段乱写 → 一律 scoped（最小权限优先，不得静默放宽）。
+export function memberTier(name, root) {
+  const who = String(name || '').trim();
+  if (!who) return TIER_SCOPED;
+  const r = readRoster(root);
+  if (!r.ok) return TIER_SCOPED;
+  const m = r.members.find((x) => String((x && x.name) || '') === who);
+  if (!m) return TIER_SCOPED;
+  const t = String(m.tier || TIER_SCOPED).trim().toLowerCase();
+  return t === TIER_FULL ? TIER_FULL : TIER_SCOPED;
+}
+
+// 路径是否落在编排层的私有状态目录（.superagent/）下。
+//
+// 这条判定有**两个**用途，缺一不可：
+//   1. 派工闸门 1c —— SCOPE 里出现 .superagent/ 下的条目一律拒派。
+//      读模式按目录树放宽 ⇒ 连一条 roster.json 的只读条目都会覆盖整个目录树，
+//      于是能读到兄弟成员的错题本全文；写权限则能改自己的权限等级（自己提权）。
+//   2. full 权限等级的例外 —— full 是「项目内自由读写」，
+//      但 .superagent/ 是**成员互相篡位**的战场，必须从 full 里挖掉。
+//      成员自己的方法论与错题本走 guard 的 exactPaths，与本判定无关。
+export function touchesSuperagentPath(p) {
+  const s = String(p || '').replace(/\\/g, '/').toLowerCase();
+  return s === '.superagent' || s.startsWith('.superagent/') ||
+    s.endsWith('/.superagent') || s.includes('/.superagent/');
+}
+
+// 目标路径是否落在工作区根之下。
+// 相对路径算「在内」（工作区的相对引用）；绝对路径按前缀比较。
+export function withinWorkspace(target) {
+  const raw = String(target || '').replace(/\\/g, '/').trim();
+  if (!raw) return false;
+  const rel = relativize(raw);
+  if (rel === '') return true;                       // 就是工作区根
+  if (rel.startsWith('/')) return false;             // unix 绝对路径且不在区内
+  if (/^[a-z]:\//.test(rel)) return false;          // 盘符绝对路径且不在区内
+  return true;
+}
+
 // ── 派工记录 ──────────────────────────────────────────
 // TTL 兜底（S6.2 第 2 条 / S6.4）：超过 TTL 还停在 active 的记录判死。
 // 以前只有 TTL 过滤，state 永远停在 active —— 台账状态与真实情况失步（D-10）。
@@ -464,6 +549,103 @@ export function markDispatchDone(ledger, dispatchId, reason) {
   hit.ended_at = Date.now();
   if (reason) hit.end_reason = String(reason);
   return true;
+}
+
+// ── 越界请求（权限自动审核）─────────────────────────────
+//
+// 子代理撞到 scope 墙时，护栏**自动**把「它想访问什么、被拒了什么」记进台账。
+// 父会话据此批准扩权，不必等 worker 自己汇报，也不必靠父会话去猜它卡在哪。
+//
+// 自动的是**发现、判定与记账**；**批准权仍在父会话手里** ——
+// 让被约束者自己决定边界，等于把授权模型整个拆掉（D-31 同族的红线）。
+export function recordScopeRequest(ledger, req) {
+  if (!Array.isArray(ledger.scope_requests)) ledger.scope_requests = [];
+  const at = Date.now();
+  const entry = {
+    request_id: 'req_' + at.toString(36) + '_' + Math.random().toString(36).slice(2, 8),
+    dispatch_id: String(req.dispatch_id || ''),
+    agent: String(req.agent || ''),
+    session_id: String(req.session_id || ''),
+    tool: String(req.tool || ''),
+    mode: String(req.mode || ''),
+    tier: String(req.tier || ''),
+    targets: (req.targets || []).map((t) => String(t)).slice(0, 10),
+    state: 'pending',
+    at
+  };
+  // 同一目标重复请求不重复记 —— worker 撞一次墙可能重试很多次，
+  // 重复条目会把待审清单淹掉（漏放与误伤是同一枚硬币：这里防的是「噪音淹没信号」）。
+  const dup = ledger.scope_requests.find((r) =>
+    r.state === 'pending' &&
+    r.dispatch_id === entry.dispatch_id &&
+    r.session_id === entry.session_id &&
+    JSON.stringify(r.targets) === JSON.stringify(entry.targets));
+  if (dup) {
+    dup.hits = (Number(dup.hits) || 1) + 1;
+    dup.last_at = at;
+    // 等级可能在这期间被管理员改过（scoped -> full）—— 刷新，
+    // 否则父会话在待审清单里看到的等级是过时的。
+    if (entry.tier) dup.tier = entry.tier;
+    return dup.request_id;
+  }
+  ledger.scope_requests.push(entry);
+  // 待审条目上限：只增不减的记录池会变成垃圾堆（错题本/履历都栽过这个跟头）。
+  const pending = ledger.scope_requests.filter((r) => r.state === 'pending');
+  if (pending.length > 50) {
+    const drop = new Set(pending.slice(0, pending.length - 50));
+    ledger.scope_requests = ledger.scope_requests.filter((r) => !drop.has(r));
+  }
+  return entry.request_id;
+}
+
+// 批准一条越界请求：把目标并入该派工的 scope，并同步子会话绑定。
+// 必须同步 binding —— guard 下一次判定读的是 binding.scope，不是派工记录。
+export function grantScopeRequest(ledger, requestId, approver) {
+  if (!Array.isArray(ledger.scope_requests)) {
+    return { ok: false, error: '台账里没有越界请求记录（scope_requests 为空）' };
+  }
+  const req = ledger.scope_requests.find((r) => r.request_id === String(requestId));
+  if (!req) return { ok: false, error: '找不到 request_id=' + requestId };
+  if (req.state !== 'pending') {
+    return { ok: false, error: '该请求已处理（state=' + req.state + '）' };
+  }
+  const d = (ledger.dispatches || []).find((x) => x.dispatch_id && x.dispatch_id === req.dispatch_id);
+  if (!d) {
+    return { ok: false, error: '台账里找不到对应的派工 ' + (req.dispatch_id || '(空)') + ' —— 可能已结束' };
+  }
+  const added = [];
+  if (!Array.isArray(d.scope)) d.scope = [];
+  if (!Array.isArray(d.scope_amended)) d.scope_amended = [];
+  for (const t of req.targets || []) {
+    // 读请求只授读（ro:），写请求才给可写条目 —— 批准读不等于批准写。
+    const entry = req.mode === 'read' ? (READONLY_PREFIX + ' ' + t) : t;
+    if (!d.scope.includes(entry)) { d.scope.push(entry); added.push(entry); }
+    if (!d.scope_amended.includes(entry)) d.scope_amended.push(entry);
+  }
+  for (const b of (ledger.bindings || [])) {
+    if (!b.dispatch_id || !req.dispatch_id || b.dispatch_id !== req.dispatch_id) continue;
+    if (!Array.isArray(b.scope)) b.scope = [];
+    for (const entry of added) if (!b.scope.includes(entry)) b.scope.push(entry);
+  }
+  req.state = 'granted';
+  req.approved_by = String(approver || '');
+  req.approved_at = Date.now();
+  req.added = added;
+  return { ok: true, request: req, dispatch_id: d.dispatch_id, added };
+}
+
+export function denyScopeRequest(ledger, requestId, approver, reason) {
+  if (!Array.isArray(ledger.scope_requests)) {
+    return { ok: false, error: '台账里没有越界请求记录（scope_requests 为空）' };
+  }
+  const req = ledger.scope_requests.find((r) => r.request_id === String(requestId));
+  if (!req) return { ok: false, error: '找不到 request_id=' + requestId };
+  if (req.state !== 'pending') return { ok: false, error: '该请求已处理（state=' + req.state + '）' };
+  req.state = 'denied';
+  req.approved_by = String(approver || '');
+  req.approved_at = Date.now();
+  req.deny_reason = String(reason || '');
+  return { ok: true, request: req };
 }
 
 // ── 子会话绑定 ────────────────────────────────────────

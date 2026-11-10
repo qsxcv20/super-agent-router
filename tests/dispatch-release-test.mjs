@@ -1,7 +1,7 @@
 // 派工名额显式释放（release-slot.mjs）回归测试
-// 用法：node .superagent/dispatch-release-test.mjs
+// 用法：node tests/dispatch-release-test.mjs
 //   默认跑安装副本；跑仓库副本请显式指定：
-//   $env:SAR_PLUGIN_ROOT='<repo>/plugin'; node .superagent\dispatch-release-test.mjs
+//   $env:SAR_PLUGIN_ROOT='<repo>/plugin'; node tests\dispatch-release-test.mjs
 //
 // 验证这些事（D-28）：
 //   1. 缺 payload / 非法 JSON / 台账读不出来 → 报错退出，不静默成功

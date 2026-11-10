@@ -14,7 +14,8 @@ import {
   activeDispatches, activeDispatchesAll, totalDispatches, dispatchedTotal,
   bumpDispatchCounter, scopeClash, workspaceRoot, projectRoot,
   MAX_ACTIVE_DISPATCHES, MAX_TOTAL_DISPATCHES,
-  resolveAgentKey, extractBriefMarkers, reapExpiredDispatches
+  resolveAgentKey, extractBriefMarkers, reapExpiredDispatches, normScopeEntry,
+  touchesSuperagentPath
 } from './lib.mjs';
 import { readLessons, countEntries, readRecords } from './lessons.mjs';
 
@@ -77,6 +78,68 @@ if (scopeDetail.rejected.length) {
   deny('[super-agent-router] 派工的 SCOPE 行里有无法解析的条目：' +
     scopeDetail.rejected.slice(0, 5).join(', ') +
     '。白名单漏收 = 越界管控范围被静默缩小，请把这些条目写成规范路径后重新派工。');
+}
+
+// === 闸门 1b：SCOPE 不得越权授予「他人的私有记忆」 ===
+//
+// .superagent/lessons/ 与 .superagent/methods/ 装的是**每个成员自己的**记忆：
+// 错题本 = 栽过哪，方法论 = 怎么做事。读模式按「目录条目所在目录树」放宽，
+// 所以一旦把整个目录写进 SCOPE，worker 就能读到**兄弟成员的错题本全文**与
+// **Router 私有账 _router.md**。
+// 独立验收实测复现（本轮 sa-context-trace）：读兄弟成员规则全文与 _router.md 94 行，均未被拦。
+// 方向是「教训被窃取而非分发」—— 用户担心的「成员互相篡位」正是这条。
+//
+// 而这些权限**本来就不需要写进 SCOPE**：guard 对被派工成员自己的方法论与错题本
+// 按**精确文件**单独放行（guard.mjs 的 exactPaths），与 SCOPE 无关。
+// 所以把整个目录写进 SCOPE 只有一个效果：越权授予他人记忆。
+const PRIVATE_MEMORY_DIRS = ['.superagent/lessons', '.superagent/methods'];
+for (const raw of scope) {
+  const p2 = normScopeEntry(raw);
+  if (!p2) continue;
+  const hit = PRIVATE_MEMORY_DIRS.find((m) => p2.path === m || p2.path.startsWith(m + '/'));
+  if (hit) {
+    deny('[super-agent-router] 派工的 SCOPE 覆盖了成员的私有记忆目录（' + hit + '/）—— 拒绝派发。' +
+      '该目录装的是每个成员自己的错题本与方法论。读模式按目录树放宽，' +
+      '而文件条目的读范围是它**所在的目录** —— 所以哪怕只写某个成员的文件，' +
+      '读范围也会覆盖整个目录，写进白名单等于让 worker 读到**兄弟成员的错题本全文**与 Router 私有账。' +
+      '不需要写进 SCOPE：被派工成员自己的方法论与错题本由 guard 按精确文件单独放行，与 SCOPE 无关。' +
+      '若确实要把某成员的记录给 worker，请走「Router 转写进 brief」这条契约通道。');
+  }
+}
+// === 闸门 1c：SCOPE 不得覆盖 .superagent/ 下的任何条目 ===
+//
+// D-31 只封了 lessons/ 与 methods/ 两个目录，但**同一个漏洞在别的条目上照样成立**：
+// 读模式下，文件条目的读范围 = 它**所在的目录**（inScope 的 treeRoot 规则）。
+// 所以只写一条 roster.json 的只读条目，读范围也是整个 .superagent/ ——
+// 能读到兄弟成员的错题本全文与方法论全文，与直接写 lessons/ 目录效果一样。
+//
+// 写权限更危险：.superagent/roster.json 存着成员的**权限等级（tier）**。
+// worker 能改它 = 自己给自己提权 = 授权模型当场被拆掉。
+//
+// 所以这里按「目录树」整体封，而不是按具体文件封：
+//   · 读权限：worker 不需要读 roster（路由是 Router 的事）；
+//     它自己的方法论与错题本走 guard 的 exactPaths，与 SCOPE 无关。
+//   · 写权限：权限等级的变更必须由父会话（管理员）执行，不在 worker 手里。
+//
+// 诚实边界（别写成「绝对安全」）：hook 是护栏不是沙箱 —— worker 若能执行一段
+// 落盘的脚本，脚本内部的 fs 写入不受本判定约束。那一层的兜底是运行时权限 +
+// 人工确认 + .superagent/changes.log 的审计留痕。
+for (const raw of scope) {
+  const p2 = normScopeEntry(raw);
+  if (!p2) continue;
+  if (!touchesSuperagentPath(p2.path)) continue;
+  if (p2.isDir) {
+    deny('[super-agent-router] 派工的 SCOPE 覆盖了编排层的私有状态目录（.superagent/）—— 拒绝派发。' +
+      '目录条目会把整棵 .superagent/ 展开成可读范围，' +
+      '于是能读到兄弟成员的错题本全文与方法论全文（这正是「成员互相篡位」的那条路）。' +
+      '需要读编排层状态文件时，请逐个文件写成只读条目（ro: .superagent/roster.json），' +
+      '那种写法**精确生效**、不展开目录树。');
+  }
+  if (!p2.readOnly) {
+    deny('[super-agent-router] 派工的 SCOPE 给了编排层私有状态目录（.superagent/）的**写**权限 —— 拒绝派发。' +
+      '该目录存着成员的**权限等级（tier）**，写它等于自己给自己提权 = 授权模型当场被拆掉。' +
+      '只读条目（ro: ）可以，逐个文件写；写权限不行。');
+  }
 }
 
 const ledger = readLedger();
