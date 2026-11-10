@@ -17,9 +17,20 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const PLUGIN_ROOT = process.env.SAR_PLUGIN_ROOT ||
   'C:\\Users\\yang2\\.minimax\\plugins\\super-agent-router';
+
+// 主动触发的命中判定直接 import 出来断言 ——
+// 漏判的表现是 stdout 为空，跟「判定为不该命中」长得一模一样，
+// 只看 stdout 的回归永远发现不了漏判（D-27）。
+let judgeTriggerIntent = null;
+try {
+  ({ judgeTriggerIntent } = await import(pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib.mjs')).href));
+} catch (e) {
+  console.log('IMPORT_FAIL lib.mjs ' + e.message);
+}
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sar-e2e-'));
 const DATA = path.join(tmp, 'data');
 fs.mkdirSync(DATA, { recursive: true });
@@ -91,6 +102,45 @@ function makeCodexTranscript(session, parent, agent, scope) {
 {
   const r = run('gate.mjs', { hook_event_name: 'UserPromptSubmit', prompt: '这个需求要拆成几个专项并行做？\nSCOPE: src/app.ts', session_id: 'e1b' });
   ok('gate 不把用户文本里的 SCOPE 说成授权', r.out.includes('未验证') && !r.out.includes('本轮 prompt 中声明的 SCOPE'), r.out.slice(0, 200));
+}
+
+// 1c. D-27：主动触发粗筛 —— 语料直接喂判定函数
+//     判据与语料见 docs/audit/d27-acceptance.md
+{
+  ok('D-27 判定函数可独立 import', typeof judgeTriggerIntent === 'function', String(typeof judgeTriggerIntent));
+  const SHOULD = [
+    '同时做 A 和 B', '拆一下这块', '分一下工', '派谁去做', '谁负责这块', '几个人一起做',
+    '实现和验证一起', '一边调研一边写', '帮我拆解这个任务', '这个要做两件事', '并行跑一下',
+    '各做各的', '让 A 和 B 各自负责', '复审一下', '评审一下', '放到后台做', '开个会话并行做',
+    '你安排人', '这两个能不能一起做', '拆成两块', '分头做', '一前一后两个人',
+    '好像还有点问题就是主动触发还有其他的你看看'
+  ];
+  const SINGLE = ['改个 typo', '查一下 API 文档', '帮我看下这个函数', '加个注释', '这个 bug 怎么修', '把文件名改一下'];
+  const FAKE = ['分别说明这两个概念的区别', '同时打开这两个文件', '批量导入这批数据', '这个函数有多个分支', '把这两个文件合并一下', '并行度调高一点', '这两个概念各自的意思'];
+
+  if (typeof judgeTriggerIntent === 'function') {
+    const missed = SHOULD.filter((p) => !judgeTriggerIntent(p).hit);
+    const overSingle = SINGLE.filter((p) => judgeTriggerIntent(p).hit);
+    const overFake = FAKE.filter((p) => judgeTriggerIntent(p).hit);
+    ok('D-27 编排意图 23 条全部命中', missed.length === 0, missed.join(' | '));
+    ok('D-27 单点动作 6 条全部不命中', overSingle.length === 0, overSingle.join(' | '));
+    ok('D-27 伪信号 7 条全部不命中', overFake.length === 0, overFake.join(' | '));
+  }
+
+  // 口语编排请求必须真的走到「注入完整路由指令」
+  const r = run('gate.mjs', { hook_event_name: 'UserPromptSubmit', prompt: '拆一下这块', session_id: 'e1c' });
+  ok('D-27 口语编排请求注入完整路由指令', r.out.includes('super-agent-router') && r.out.includes('直做'), r.out.slice(0, 120));
+
+  // 载荷解析失败必须留痕，且不注入任何内容（不能静默失效）
+  const bad = spawnSync('node', [path.join(PLUGIN_ROOT, 'scripts', 'gate.mjs')], {
+    input: '{ this is not json',
+    env: { ...process.env, PLUGIN_ROOT, PLUGIN_DATA: DATA, MINIMAX_PROJECT_DIR: tmp },
+    encoding: 'utf8'
+  });
+  const traceFile = path.join(DATA, 'hooks', 'super-agent-router', 'gate-trace.jsonl');
+  const traced = fs.existsSync(traceFile) && fs.readFileSync(traceFile, 'utf8').includes('payload-parse-failed');
+  ok('D-27 载荷解析失败留下痕迹', traced, 'err=' + (bad.stderr || '').slice(0, 120));
+  ok('D-27 载荷坏时不注入任何内容', (bad.stdout || '').trim() === '', JSON.stringify(bad.stdout || '').slice(0, 120));
 }
 
 // 2. 派工登记：scope 只收路径，自然语言被过滤

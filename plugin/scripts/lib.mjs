@@ -1499,3 +1499,104 @@ export function validateEntryOutput(text) {
   }
   return { checked: true, ok: problems.length === 0, problems };
 }
+// ── 主动触发粗筛（UserPromptSubmit / D-27）───────────────────────
+//
+// 判定抽到这里并导出，回归可以 import 后直接喂样本断言。
+// 以前只能靠「跑 gate 脚本看 stdout」来验 —— 而漏判的表现恰好就是
+// 「stdout 为空」，跟「判定为不该命中」长得一模一样，
+// 所以漏判能长期不被发现（D-27）。
+//
+// 三档判据（语料与判据见 docs/audit/d27-acceptance.md）：
+//   A 编排意图 —— 必须命中
+//   B 单点动作 —— 必须不命中
+//   C 伪信号 —— 出现「同时/多个/分别/各自/并行」但不是在要求编排，必须不命中
+//
+// 上一轮错在三处：
+//   ① INTENT 只有名词化/书面说法（派工/组队/分工/验收/复盘），
+//      口语动词短语（拆一下/分头做/谁负责/各做各的…）全漏；
+//   ② `prompt.length > 40` 这个硬门槛把 SIGNAL 彻底废掉 ——
+//      中文口语指令通常只有 3~12 字，SIGNAL 里的「同时/各自/多个」一个都够不着；
+//   ③ SIGNAL 单独出现就命中会误伤，所以信号词必须与「动作词」邻近同现才算编排意图。
+
+// 编排意图：书面说法 + 口语动词短语 + 机制自指 + 多项请求。
+// 每个词都带上下文约束，避免「并行度」「批量导入」这类普通句子被卷进来。
+const TRIGGER_INTENT = new RegExp([
+  // —— 书面 / 名词化 ——
+  '派工', '组队', '组建', '拆成', '拆给', '拆开', '拆分', '拆一下', '拆解',
+  '分工', '分一下', '分头', '分成', '分给',
+  '安排人', '你安排', '交给谁', '谁来做', '谁去做', '谁负责',
+  '编排', '路由', '多.?agent', '团队', '专项', '验收', '复盘', '错题本',
+  '复审', '评审',
+  // —— 并行词必须带动作后缀：光有「并行」不算（并行度调高一点不是编排）——
+  '并行(?=.{0,4}(做|跑|处理|执行|推进|干|搞|分|写|改))',
+  // —— 口语动词短语 ——
+  '各做各的', '各自负责', '一起做', '一起搞', '一起干',
+  '几个人', '两个人', '三人', '多人', '多开',
+  '开.?个会话', '开一会话', '一前一后', '一边',
+  '放到后台', '放后台',
+  // —— 数量 + 事 ——
+  '两件事', '三件事', '几件事', '多件事', '好几件',
+  // —— 机制自指：用户在谈编排机制本身 ——
+  '主动触发', '触发机制', '编排机制', '路由机制', '派工机制', '编排协议', '触发链路',
+  // —— 多项请求 ——
+  '还有(其他|别的|其它|几个|什么)', '另外(还有|也)', '顺便(也)?', '此外',
+  // —— 和…一起 / 能不能一起 ——
+  '(和|跟|与).{0,12}一起', '能不能一起', '可不可以一起'
+].join('|'), 'i');
+
+// 并行/多路信号词：单独出现不算意图，必须与动作词邻近同现。
+// 刻意不收「批量」「多线程」—— 「批量导入」「多线程安全吗」都是单点动作，不是编排。
+const TRIGGER_SIGNAL = /(并行|同时|多个|分别|各自|一起|两头|分头|一前一后|多路)/i;
+
+// 动作词：出现信号词时，必须在邻近窗口内同现，否则视为伪信号。
+// 刻意不收「改/写/修/开」这类单点动作词 ——
+// 「同时改一下这两个文件」「同时打开这两个文件」是单点动作，不是编排。
+const TRIGGER_ACTION = /(做|干|搞|负责|处理|执行|跑|推进|开工|动手|包办|安排|评审|复审|完成|实现|分工|拆|派|上线|发布)/i;
+
+// 信号词与动作词的邻近窗口（字符）。
+const TRIGGER_WINDOW = 12;
+
+// SCOPE 提示：用户文本里出现了 SCOPE: 段 → 本轮大概率是在下派工指令。
+const TRIGGER_SCOPE = /SCOPE\s*[:：]/i;
+
+// 判定：这段 prompt 该不该走编排流程。
+// 返回 { hit, reason } —— reason 给断言与留痕用，不参与判定。
+export function judgeTriggerIntent(prompt) {
+  const p = String(prompt || '');
+  if (!p.trim()) return { hit: false, reason: '空 prompt' };
+
+  if (TRIGGER_INTENT.test(p)) return { hit: true, reason: '编排意图词命中' };
+
+  // 信号词 + 邻近动作词：并行/同时/各自… 只有真的在要求「谁做什么」才算编排。
+  for (const m of p.matchAll(new RegExp(TRIGGER_SIGNAL.source, 'gi'))) {
+    const lo = Math.max(0, m.index - TRIGGER_WINDOW);
+    const hi = Math.min(p.length, m.index + m[0].length + TRIGGER_WINDOW);
+    if (TRIGGER_ACTION.test(p.slice(lo, hi))) {
+      return { hit: true, reason: '信号词+邻近动作词命中：' + m[0] };
+    }
+  }
+
+  if (TRIGGER_SCOPE.test(p)) return { hit: true, reason: 'SCOPE 提示命中' };
+  return { hit: false, reason: '未命中编排意图' };
+}
+
+// 留痕位置：PLUGIN_DATA 可写且跨会话持久。
+// 「载荷坏了」「字段名变了」这类静默失效必须留痕 ——
+// 不留痕的话，「永远不命中」和「判定为不该命中」在日志里长得一样。
+export function writeGateTrace(kind, detail) {
+  try {
+    const base = process.env.PLUGIN_DATA;
+    if (!base) return false;
+    const dir = path.join(base, 'hooks', 'super-agent-router');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(
+      path.join(dir, 'gate-trace.jsonl'),
+      JSON.stringify({ t: Date.now(), kind: String(kind), detail: String(detail || '').slice(0, 500) }) + '\n',
+      'utf8'
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+

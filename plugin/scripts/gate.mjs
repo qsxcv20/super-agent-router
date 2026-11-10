@@ -1,27 +1,53 @@
 // UserPromptSubmit：程序层粗筛（Fast Path）
 // 只有当 prompt 命中"值得走编排流程"的特征时才注入路由指令。
-// 否则静默放行 —— 这是 Super-agent「尽量少占用人类注意力」的落点。
-import { readStdin, parseInput, extractScope } from './lib.mjs';
+// 否则静默放行 —— 这是 Super-agent 「尽量少占用人类注意力」的落点。
+//
+// v0.5.1 修正（D-27）：
+//   ① 判定抽到 lib.mjs 的 judgeTriggerIntent()，回归能直接 import 断言；
+//      以前只能靠「跑脚本看 stdout」验 —— 而漏判的表现就是 stdout 为空，
+//      和「判定为不该命中」长得一模一样，所以漏判能长期不被发现。
+//   ② 扩了口语动词短语（拆一下/分头做/谁负责/各做各的…），去掉 prompt.length > 40 硬门槛；
+//   ③ 信号词必须与动作词邻近同现，防「同时打开文件」「批量导入」这类伪信号误触发；
+//   ④ 载荷解析失败不再静默：留痕而不是悄悄不命中。
+import { readStdin, parseInputStrict, extractScope, judgeTriggerIntent, writeGateTrace } from './lib.mjs';
 import { summarizeRecordsDetailed } from './records.mjs';
 
-const input = parseInput(readStdin());
-const prompt = String(input.prompt || '');
+const raw = readStdin();
+const parsed = parseInputStrict(raw);
 
-// 粗筛特征：编排意图词 + 显式请求信号
-const INTENT = /(派工|组队|组建|拆成|拆给|分工|并行|安排人|交给谁|谁来做|编排|路由|多.?agent|团队|专项|验收|复盘|错题本)/i;
-const SIGNAL = /(并行|同时|多个|分别|各自|多线程|批量)/i;
-const SCOPE_HINT = /SCOPE\s*[:：]/i;
-
-let hit = INTENT.test(prompt);
-if (!hit && SIGNAL.test(prompt) && prompt.length > 40) hit = true;
-if (!hit && SCOPE_HINT.test(prompt)) hit = true;
-
-if (!hit) {
-  // 静默放行：不写 stdout，不注入任何上下文
+// 载荷坏了 = 我们不知道用户说了什么。
+// 以前这里用 parseInput（失败返回空对象），载荷一坏就变成「prompt 为空 → 不命中 → 静默」，
+// 于是「永远不命中」是悄无声息的 —— 与 D-26 同族的静默失效。
+if (!parsed.ok) {
+  writeGateTrace('payload-parse-failed', parsed.reason);
   process.exit(0);
 }
 
+const input = parsed.value;
+if (typeof input.prompt !== 'string') {
+  // 载荷是合法 JSON、但 prompt 字段不在 —— 平台改字段名的话，
+  // 这里就是「永远不命中」的入口，必须留痕而不是静默。
+  writeGateTrace('prompt-field-missing', Object.keys(input).join(','));
+  process.exit(0);
+}
+
+const prompt = input.prompt;
+const verdict = judgeTriggerIntent(prompt);
 const scope = extractScope(prompt);
+
+if (!verdict.hit) {
+  // 条件式兜底：只有「roster 存在 + 有专项成员 + 该成员有实战记录」时才注入一行。
+  // 没有可用专项成员的工作区（单点小改）保持 0 字节输出。
+  const fb = summarizeRecordsDetailed(3, 12);
+  if (fb.members.length) {
+    process.stdout.write(
+      '[super-agent-router] 本工作区有可复用的专项成员（本轮未判定为编排需求，故不展开）：' +
+      '若这轮要拆分/并行/分工，先读 .superagent/roster.json 按 owns 匹配；否则直做。'
+    );
+  }
+  process.exit(0);
+}
+
 const lines = [];
 lines.push('[super-agent-router] 本轮按编排流程处理。');
 lines.push('');

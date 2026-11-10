@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const ROOT = process.env.SAR_PLUGIN_ROOT ||
@@ -49,12 +50,35 @@ ok('SessionStart 有输出注入', (ss.stdout||'').includes('super-agent-router'
 ok('SessionStart 说明触发条件', (ss.stdout||'').includes('主动走编排流程'), '');
 ok('SessionStart 提示先读 roster', (ss.stdout||'').includes('roster.json'), '');
 
-// 4. 既有 gate 仍正常
+// 4. gate：没有可用专项成员的工作区里，普通提问必须 0 字节（单点小改零噪声）
+const EMPTY_PROJ = fs.mkdtempSync(path.join(os.tmpdir(), 'sar-hooks-empty-'));
 const g = spawnSync('node', [path.join(ROOT, 'scripts', 'gate.mjs')], {
   input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt: '帮我看下这个错误', session_id: 'p' }),
-  encoding: 'utf8', env: Object.assign({}, process.env, { PLUGIN_ROOT: ROOT, MINIMAX_PROJECT_DIR: PROJ }), timeout: 10000
+  encoding: 'utf8', env: Object.assign({}, process.env, { PLUGIN_ROOT: ROOT, MINIMAX_PROJECT_DIR: EMPTY_PROJ }), timeout: 10000
 });
-ok('普通提问仍静默放行', (g.stdout||'').trim() === '', JSON.stringify(g.stdout||'').slice(0,80));
+ok('普通提问仍静默放行（无可用专项成员的工作区）', (g.stdout||'').trim() === '', JSON.stringify(g.stdout||'').slice(0,80));
+
+// 4b. D-27：未命中时的条件式兜底 —— 有专项成员且该成员有实战记录时，注入一行
+{
+  const WITH = fs.mkdtempSync(path.join(os.tmpdir(), 'sar-hooks-roster-'));
+  fs.mkdirSync(path.join(WITH, '.superagent', 'methods'), { recursive: true });
+  fs.writeFileSync(path.join(WITH, '.superagent', 'roster.json'), JSON.stringify({
+    version: 1, updated: '2026-01-01',
+    members: [{ name: 'sa-hooks', kind: 'specialist', owns: '钩子回归', method: '.superagent/methods/sa-hooks.md' }]
+  }), 'utf8');
+  fs.writeFileSync(path.join(WITH, '.superagent', 'methods', 'sa-hooks.md'), [
+    '# sa-hooks', '', '## 实战记录', '', '### 钩子回归用例',
+    '- 做法：先写断言再改实现', '- 证据：回归全绿', '- 验收：独立验收通过', ''
+  ].join('\n'), 'utf8');
+  const g2 = spawnSync('node', [path.join(ROOT, 'scripts', 'gate.mjs')], {
+    input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt: '帮我看下这个错误', session_id: 'p2' }),
+    encoding: 'utf8', env: Object.assign({}, process.env, { PLUGIN_ROOT: ROOT, MINIMAX_PROJECT_DIR: WITH }), timeout: 10000
+  });
+  const out2 = (g2.stdout||'').trim();
+  ok('D-27 未命中时条件式兜底注入一行', out2.includes('本工作区有可复用的专项成员') && out2.includes('roster.json'), out2.slice(0,140));
+  ok('D-27 兜底注入不是完整路由指令', !out2.includes('本轮按编排流程处理'), out2.slice(0,160));
+  ok('D-27 兜底注入只有一行', out2.split('\n').length === 1, 'lines=' + out2.split('\n').length);
+}
 
 // 5. matcher 覆盖面：guard 只看得到被 matcher 命中的工具（D-03）
 {
