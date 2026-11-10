@@ -371,6 +371,33 @@ const gExactBad = guard(envExact, 'read', { path: '.superagent/lessons/sa-other.
 ok('只读条目：读兄弟成员的错题本被拦（不展开目录树）',
   gExactBad.decision === 'deny', gExactBad.reason.slice(0, 140));
 
+// 目录条目覆盖整个工作区时，读范围也**不得**伸进私有记忆目录。
+//
+// 这是闸门 1c 漏掉的一条路：闸门只判「SCOPE 条目的路径本身碰没碰 .superagent/」，
+// 而读模式对**目录条目**会展开整棵树 —— 一条 `ro: <工作区根>/` 的读范围是整个工作区，
+// 连带把 .superagent/lessons/ 放开了。堵入口不够，**读范围本身也要判**。
+const envRoot = makeEnv();
+fs.mkdirSync(path.join(envRoot.PROJ, '.superagent', 'lessons'), { recursive: true });
+fs.writeFileSync(path.join(envRoot.PROJ, '.superagent', 'lessons', 'sa-other.md'), '# 其他成员', 'utf8');
+const rootScope = 'SCOPE: ro: ' + envRoot.PROJ.replace(/\\/g, '/') + '/';
+fs.writeFileSync(envRoot.TR, JSON.stringify({
+  uuid: 'p-3', parentUuid: null, sessionId: 'mvs_child',
+  timestamp: new Date().toISOString(), type: 'user',
+  message: { role: 'user', content: [{ type: 'text', text: [
+    '<agent-context>', '  agentName: worker', '  PARENT SESSION: mvs_parent', '</agent-context>',
+    '任务：按 brief 执行', rootScope
+  ].join('\n') }] }
+}) + '\n', 'utf8');
+const dRoot = dispatchWithScope(envRoot, rootScope);
+ok('覆盖工作区的目录条目本身可派（它没直接点 .superagent/）',
+  !String(dRoot.stdout || '').includes('deny'), String(dRoot.stdout || '').slice(0, 160));
+const gRootPriv = guard(envRoot, 'read', { path: '.superagent/lessons/sa-other.md' });
+ok('目录条目的读范围也伸不进私有记忆目录', gRootPriv.decision === 'deny',
+  gRootPriv.reason.slice(0, 160));
+const gRootOk = guard(envRoot, 'read', { path: 'docs/other.md' });
+ok('同一目录条目仍能读工作区里的普通文件', gRootOk.decision !== 'deny',
+  gRootOk.reason.slice(0, 140));
+
 // brief 直接建边界（不经 dispatch）也要封私有记忆目录 —— 闸门 1c 的第二道防线
 const envBrief = makeEnv();
 fs.writeFileSync(envBrief.TR, JSON.stringify({

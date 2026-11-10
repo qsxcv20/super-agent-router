@@ -210,6 +210,9 @@ export function inScope(scope, target, mode = 'write') {
   if (!Array.isArray(scope) || scope.length === 0) return false;
   const rawT = String(target || '').replace(/\\/g, '/');
   if (!rawT) return false;
+  // 私有记忆路径：除精确文件通道（mode='exact'）外，一律不授予。
+  // 目录条目展开的读范围也不例外 —— 那正是漏进来的那条路。
+  if (mode !== 'exact' && isPrivateMemoryPath(rawT)) return false;
   const rel = relativize(rawT);
   const abs = normalizePath(rawT);
   if (!rel && !abs) return false;
@@ -221,8 +224,27 @@ export function inScope(scope, target, mode = 'write') {
     if (!e) continue;
     if (e === '*') return true;
     const isDir = raw.endsWith('/');
-    const prefix = isDir ? e.replace(/\/+$/, '') : e;
-    const exact = (rel === e || abs === e);
+    // 条目要同时按两种写法比：**绝对式**与**相对工作区的相对式**。
+    //
+    // 为什么：目标侧已经折算过（rel 与 abs 两种都在比），
+    // 但条目侧以前只按它写出来的样子比 —— 于是 SCOPE 写绝对路径时，
+    // worker 用相对路径调用（read docs/x.md）匹配不上，反过来写绝对路径才命中。
+    // 契约 S2 写的是「绝对路径会先折算成相对工作区的相对路径，两种写法都能命中」——
+    // 以前只有「条目写相对路径」这一半成立。
+    const eRel = relativize(raw);
+    const forms = [];
+    if (e) forms.push(e);
+    if (eRel && eRel !== e) forms.push(eRel);
+    const prefixes = forms.map((f) => (isDir ? f.replace(/\/+$/, '') : f));
+    // p === '' 表示「工作区根本身」的相对式 —— 任何相对路径都在它之下。
+    const under = (p) => {
+      if (rel === p || abs === p) return true;
+      if (rel.startsWith(p + '/') || abs.startsWith(p + '/')) return true;
+      if (p === '' && rel !== '') return true;
+      return false;
+    };
+    const hit = under;
+    const exact = forms.some((f) => rel === f || abs === f) || (eRel === '' && rel !== '');
     if (mode === 'write') {
       // ro: 条目永不授予写权限 —— 以前 ro: 前缀被整条丢弃，白名单变小等于放行。
       if (parsed.readOnly) continue;
@@ -231,7 +253,7 @@ export function inScope(scope, target, mode = 'write') {
       if (touchesSuperagentPath(raw)) continue;
       if (exact) return true;
       // 目录条目只覆盖其「之下」的内容，不含目录本身（删掉整个目录超出授权范围）
-      if (isDir && (rel.startsWith(prefix + '/') || abs.startsWith(prefix + '/'))) return true;
+      if (isDir && prefixes.some((p) => under(p) && !(rel === p || abs === p))) return true;
       continue;
     }
     if (mode === 'read') {
@@ -243,14 +265,15 @@ export function inScope(scope, target, mode = 'write') {
       if (touchesSuperagentPath(raw)) continue;
       if (isDir) {
         // 目录条目：树根就是它自己，读它等于读它的树（S2.1）
-        if (rel === prefix || abs === prefix) return true;
-        if (rel.startsWith(prefix + '/') || abs.startsWith(prefix + '/')) return true;
+        if (prefixes.some((p) => hit(p))) return true;
         continue;
       }
       // 文件条目：树根 = 它所在的目录
-      const treeRoot = prefix.includes('/') ? prefix.slice(0, prefix.lastIndexOf('/')) : '';
-      if (treeRoot && (rel === treeRoot || abs === treeRoot ||
-        rel.startsWith(treeRoot + '/') || abs.startsWith(treeRoot + '/'))) return true;
+      for (const p of prefixes) {
+        const treeRoot = p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '';
+        if (treeRoot && (rel === treeRoot || abs === treeRoot ||
+          rel.startsWith(treeRoot + '/') || abs.startsWith(treeRoot + '/'))) return true;
+      }
       continue;
     }
     if (mode === 'exact') {
@@ -439,6 +462,20 @@ export function memberTier(name, root) {
   if (!m) return TIER_SCOPED;
   const t = String(m.tier || TIER_SCOPED).trim().toLowerCase();
   return t === TIER_FULL ? TIER_FULL : TIER_SCOPED;
+}
+
+// 私有记忆路径（每个成员自己的错题本与方法论）。
+//
+// 判据：**任何 scope 条目都不得授予这些路径**（读与写都不行），
+// 唯一的例外是 guard 给自己成员开的精确文件通道（mode='exact'）。
+//
+// 为什么必须单独判：派工闸门只拦「SCOPE 里出现的路径本身」碰没碰 .superagent/。
+// 但读模式对**目录条目**会展开整棵树 —— 于是一条
+// `ro: <工作区根>/` 的读范围覆盖整个工作区，连带把 .superagent/lessons/ 也放开了。
+// 也就是说：闸门没拦的条目，读范围照样能泄进私有记忆 —— 堵入口不够，**读范围本身也要判**。
+export function isPrivateMemoryPath(p) {
+  const s = String(p || '').replace(/\\/g, '/').toLowerCase();
+  return /(^|\/)\.superagent\/(lessons|methods)(\/|$)/.test(s);
 }
 
 // 路径是否落在编排层的私有状态目录（.superagent/）下。
