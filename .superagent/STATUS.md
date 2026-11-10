@@ -306,3 +306,14 @@ node scripts/release-slot.mjs '{"parent_session_id":"mvs_xxx"}'
 现在按目录名判断：PLUGIN_DATA 已是本插件目录时直接写进去，否则才补一层。
 变异检验：把修复回退后，`.superagent/e2e-test.mjs` 里恰好那 2 条 D-29 断言变红（direct=false nested=true），其余全过 ——
 断言不是空转。
+
+### 六、D-30：变异自检套件并发不安全（会假红）
+
+`.superagent/d27-mut-test.mjs` 的 `copyPlugin()` 用固定临时目录名 + 先删后拷。
+父会话与验收方同时跑全量回归时互相踩：本轮安装副本那份报了
+「FAIL D-27 变异自检·基线副本全绿 :: FAIL「搞定了，测试通过」被拦 | FAIL 条目缺字段时 block | FAIL 条目缺统计行时 block」
+—— 这三条是 **watchdog** 断言，与 D-27 判定毫无关系，正是被抹掉副本的受害者。
+
+**会给假 FAIL 的测试比没有测试更危险**：它教人忽略红灯，真出问题时也会被当成老样子跳过。
+修法：`copyPlugin()` 改用 `fs.mkdtempSync` 生成独立目录，退出时统一回收。
+并发双跑实测：两个实例同时跑均 `>>> D27MUT ALL PASS`，干净复跑 exit 0。

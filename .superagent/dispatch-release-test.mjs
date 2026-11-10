@@ -152,7 +152,60 @@ const base = (id, over = {}) => Object.assign({
     'ok=' + out.ok + ' state=' + led.dispatches[0].state);
 }
 
-// ── 8. 台账结构完整（写回不丢字段） ────────────────────
+// ── 8. 安全属性：worker 不能通过 bash 通道调释放入口 ──────
+{
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'sar-release-worker-'));
+  fs.mkdirSync(path.join(proj, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(proj, 'src', 'app.ts'), 'export const a = 1;', 'utf8');
+
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'sar-release-wdata-'));
+  fs.writeFileSync(path.join(data, 'dispatches.json'), JSON.stringify({
+    dispatches: [{
+      dispatch_id: 'dsp_worker_target', parent_session_id: 'mvs_parent', turn_id: 't', tool_use_id: 'c',
+      agent: 'sa-x', scope: ['src/app.ts'], state: 'active', at: Date.now()
+    }], bindings: [], counters: {}
+  }, null, 2), 'utf8');
+
+  // 真 transcript：worker 的 scope 只有 src/app.ts
+  const trText = ['<agent-context>', '  agentName: worker', '  PARENT SESSION: mvs_parent', '</agent-context>',
+    '任务：按 brief 执行', 'SCOPE: src/app.ts'].join('\n');
+  const tr = path.join(proj, 'tr.jsonl');
+  fs.writeFileSync(tr, JSON.stringify({
+    uuid: 'p-0', parentUuid: null, sessionId: 'mvs_child',
+    timestamp: new Date().toISOString(), type: 'user',
+    message: { role: 'user', content: [{ type: 'text', text: trText }] }
+  }) + '\n', 'utf8');
+
+  function wguard(tool, input) {
+    const r = spawnSync('node', [path.join(PLUGIN_ROOT, 'scripts', 'guard.mjs')], {
+      input: JSON.stringify({
+        hook_event_name: 'PreToolUse', tool_name: tool, session_id: 'mvs_child',
+        agent_id: 'mvs_child', agent_type: 'worker', transcript_path: tr,
+        cwd: proj, tool_input: input
+      }),
+      env: { ...process.env, PLUGIN_DATA: data, MINIMAX_PROJECT_DIR: proj },
+      encoding: 'utf8'
+    });
+    let j = null; try { j = JSON.parse(r.stdout); } catch {}
+    return { decision: (j && j.hookSpecificOutput && j.hookSpecificOutput.permissionDecision) || '' };
+  }
+
+  const relCmd = 'node "' + path.join(PLUGIN_ROOT, 'scripts', 'release-slot.mjs') + '" ' +
+    "'{\"dispatch_id\":\"dsp_worker_target\"}'";
+  const g1 = wguard('bash', { command: relCmd });
+  ok('worker 调释放入口被 scope 拦下', g1.decision === 'deny', 'decision=' + g1.decision);
+
+  const g2 = wguard('bash', { command: 'node "' + path.join(PLUGIN_ROOT, 'scripts', 'release-slot.mjs') + '" --all' });
+  ok('worker 用 --all 也被拦下', g2.decision === 'deny', 'decision=' + g2.decision);
+
+  const g3 = wguard('write', { file_path: 'src/app.ts' });
+  ok('对照：worker 写自己 scope 内文件放行（边界确实建立了）', g3.decision === '', 'decision=' + g3.decision);
+
+  const led2 = readLedger(data);
+  ok('worker 尝试后台账未被释放', led2.dispatches[0].state === 'active', 'state=' + led2.dispatches[0].state);
+}
+
+// ── 9. 台账结构完整（写回不丢字段） ────────────────────
 {
   const dir = seed([base('dsp_a')]);
   run(dir, [JSON.stringify({ dispatch_id: 'dsp_a' })]);

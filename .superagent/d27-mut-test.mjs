@@ -51,12 +51,28 @@ const MUTANTS = [
     expect: ['D-27 单点动作 6 条全部不命中', 'D-27 伪信号 7 条全部不命中'] }
 ];
 
+// 每次用独立临时目录。
+//
+// 为什么不能用固定目录名（sar-d27mut-<tag>）：两个实例并发跑（比如父会话与独立验收方
+// 同时跑全量回归）时，后一个会把前一个的副本 rmSync 掉再重拷 —— 前一个正在跑的
+// e2e 于是读到半拷状态，「基线副本全绿」这条断言**假红**。
+// **会给假 FAIL 的测试比没有测试更危险**：它教人忽略红灯。
+const createdRoots = [];
+
 function copyPlugin(tag) {
-  const dst = path.join(os.tmpdir(), 'sar-d27mut-' + tag);
-  fs.rmSync(dst, { recursive: true, force: true });
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sar-d27mut-' + tag + '-'));
+  createdRoots.push(root);
+  const dst = path.join(root, 'plugin');
   fs.mkdirSync(dst, { recursive: true });
   fs.cpSync(PLUGIN, dst, { recursive: true });
   return dst;
+}
+
+function cleanup() {
+  for (const root of createdRoots) {
+    try { fs.rmSync(root, { recursive: true, force: true }); } catch {}
+  }
+  createdRoots.length = 0;
 }
 
 function runE2E(root) {
@@ -74,7 +90,7 @@ function runE2E(root) {
   const root = copyPlugin('base');
   const r = runE2E(root);
   ok('D-27 变异自检·基线副本全绿', r.red.length === 0, r.red.slice(0, 3).join(' | ') + ' :: ' + r.tail);
-  fs.rmSync(root, { recursive: true, force: true });
+  cleanup();
 }
 
 // 1. 逐个定向回退，每组都必须让对应断言变红
@@ -86,7 +102,7 @@ for (const m of MUTANTS) {
   const after = m.apply(raw);
   if (after === null || after === raw) {
     ok(m.id + ' ' + m.desc + ' · 补丁命中', false, '锚点变了，变异没落地 —— 结论无效');
-    fs.rmSync(root, { recursive: true, force: true });
+    cleanup();
     continue;
   }
   fs.writeFileSync(libPath, after, 'utf8');
@@ -99,7 +115,7 @@ for (const m of MUTANTS) {
   for (const label of m.expect) {
     ok(m.id + ' · 回退后「' + label + '」变红', redText.indexOf('FAIL ' + label) >= 0, 'RED=' + r.red.length + ' :: ' + r.tail);
   }
-  fs.rmSync(root, { recursive: true, force: true });
+  cleanup();
 }
 
 console.log(fail === 0 ? '>>> D27MUT ALL PASS' : '>>> D27MUT FAILURES: ' + fail);

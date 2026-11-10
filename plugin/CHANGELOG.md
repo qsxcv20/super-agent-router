@@ -35,10 +35,12 @@
 
 **怎么验证**
 
-- 新增常驻回归 `.superagent/dispatch-release-test.mjs`（20 条断言）：
+- 新增常驻回归 `.superagent/dispatch-release-test.mjs`（24 条断言）：
   缺 payload / 非法 JSON / 台账读不出来 → 报错退出；释放单条 → state、end_reason、ended_at 落盘；
   done / aborted 记录不动；未知 id → 报错且在飞数不变；按父会话批量释放；按成员收窄；
-  `--data-dir` 与 `PLUGIN_DATA` 两种入口；写回不丢字段。
+  `--data-dir` 与 `PLUGIN_DATA` 两种入口；写回不丢字段；
+  **安全属性**：worker 通过 bash 通道调释放入口被 scope 拦下（对照组：写自己 scope 内文件放行，
+  证明边界确实建立了），台账未被 worker 改动。
 - 回归从九套变十套，仓库副本与安装副本均 0 FAIL。
 
 ### 变更 2：更正一处长期传播的数字错误
@@ -57,7 +59,16 @@ hooks.json 实际是 **4 类事件 / 7 条规则**（SessionStart、UserPromptSu
 现在按目录名判断：PLUGIN_DATA 已是本插件目录时直接写进去，否则才补一层。
 新增回归断言挂在 `.superagent/e2e-test.mjs`（痕迹必须落在 PLUGIN_DATA 下一层，且不得产生多套一层的怪目录）。
 
-### 变更 4：思维导图升到 v0.5.1 并修正
+### 变更 4：变异自检套件并发安全（D-30）
+
+`.superagent/d27-mut-test.mjs` 的 `copyPlugin()` 用**固定**临时目录名，拷贝前先清空 ——
+两个实例并发跑时，后一个把前一个正在用的副本删掉重拷，前一个的 e2e 读到半拷状态，
+「基线副本全绿」于是报**假红**（本轮实测命中：报红的三条是 watchdog 断言，跟 D-27 毫无关系）。
+
+**会给假 FAIL 的测试比没有测试更危险** —— 它教人忽略红灯。
+现在改用 `fs.mkdtempSync` 生成独立目录，退出时统一回收；并发双跑实测均全绿。
+
+### 变更 5：思维导图升到 v0.5.1 并修正
 
 `docs/super-agent-router-v0.5.1-思维导图.html`：版本号、S1~S11、触发语义、
 复合层「派发随会话而变」的更正（见 0.5.1 的 D-26 翻案），并补上 v0.5.1 的两张变更卡。
