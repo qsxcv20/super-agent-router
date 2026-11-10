@@ -69,3 +69,9 @@
 - 验收：verifier
 - 写入者：parent:mvs_9bdda202ae274c909a5b4352fc45a471 · 会话 mvs_9bdda202ae274c909a5b4352fc45a471 · 2026-11-10T17:17:22.363Z
 
+### 2026-11-10 · 插件包版本发布 v0.5.7（版本号 / description / CHANGELOG / README 诚实边界 / 包内自洽） · 插件包版本发布：版本号与描述同步、CHANGELOG 与面向使用者的 README 产出、包内自洽性校验
+- 做法：先核对 manifest 与 hooks.json 引用的脚本都存在，再同步版本号与 description；四处「说反了」的诚实边界一起改（CHANGELOG 的 v0.5.6 历史段原文保留、只在段末追加指向 0.5.7 的一句）；发布说明按验收方实测口径写 —— 不夸大 D-80、不笼统写「空设备一律放行」，两条用户可观测变化都写明
+- 证据：plugin/.minimax-plugin/plugin.json version=0.5.7；plugin/CHANGELOG.md 顶部 0.5.7 段；plugin/README.md 新增「空设备：> /dev/null 不再被当成写目标（v0.5.7）」一节与 tee / dd 对照表；docs/audit/release-v057.md；包内自洽 35 条断言 0 FAIL（改前基线跑出 6 条 FAIL，说明不是恒绿空断言）
+- 验收：verifier
+- 写入者：parent:mvs_9bdda202ae274c909a5b4352fc45a471 · 会话 mvs_9bdda202ae274c909a5b4352fc45a471 · 2026-11-10T22:07:02.407Z
+

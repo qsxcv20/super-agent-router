@@ -579,11 +579,37 @@ export function relativize(p) {
   return low;
 }
 
+// 本机家目录（判定用）。
+//
+// 为什么由这一层自己取，而不是让每个调用方把家目录传进来：
+// 家目录展开必须发生在「解析成绝对路径」这一步（见 absolutizePath 的注释）——
+// 那样调用方就不必各自记得展开。漏一次的后果是**真实存在的文件被判成「不存在」**（D-80）。
+//
+// 取不到时返回空串：expandHomePath() 在没有家目录时原样返回，于是行为退回「不展开」，
+// 不会凭空造一个家目录出来（造出来的路径必然判不存在 = 误拦诚实的交付）。
+function homeDir() {
+  try { return String(os.homedir() || ''); } catch (e) { return ''; }
+}
+
 // 把路径拼成绝对路径。盘符路径（C:/...）按绝对路径直接用，
 // 以前 watchdog 只认以 "/" 开头的绝对路径，把 "C:/x" 拼成 "<工作区根>/C:/x"，
 // existsSync 必然为假 —— 真实存在的产出被误判成不存在（D-20）。
+//
+// 家目录写法（~ / $HOME / %USERPROFILE% / $env:USERPROFILE%）在**这一步**展开（D-80）：
+// 展开是判定的一环，不是字符串美化 —— 不展开就会把家目录下的真实文件拼成
+// "<工作区根>/~/..." 这种永远不存在的路径，存在性校验必然判假，
+// 于是**真实存在的文件被判成「不存在」**，诚实的交付报告被当场拦下
+// （台账 D-80 / D-72 的 N-03）。
+//
+// 为什么下沉到这一步，而不是让每个调用方各自记得展开：
+// 「每个调用方都要记得」这件事已经漏过一次 —— watchdog 侧展开了、lib 侧没有，
+// 于是下一个拿 absolutizePath() 判存在性的脚本会重蹈覆辙。
+// 展开放进「解析成绝对路径」这一步，口径才只有一处。
+//
+// 展开发生在「拼工作区根」**之前**：家目录下的路径是**工作区外**的真实路径，
+// 展开后必须仍被当成工作区外路径（不能被拼进工作区根、也不能被当成白名单内的路径）。
 export function absolutizePath(p, root) {
-  const raw = String(p || '').replace(/\\/g, '/').trim();
+  const raw = expandHomePath(String(p || '').replace(/\\/g, '/').trim(), homeDir());
   const base = String(root || projectRoot()).replace(/\\/g, '/').replace(/\/+$/, '');
   if (!raw) return '';
   if (/^[A-Za-z]:\//.test(raw)) return raw;
@@ -1940,6 +1966,57 @@ export function extractPathTokens(cmd) {
   return splitCommandTokens(cmd).map(trimPathPunct).filter(isPathToken);
 }
 
+// ── 空设备（null device）：不是写目标，也不是项目资产（D-85）────────────
+//
+// 为什么单列一张表，而不是「看起来像设备就放过」：
+// 空设备的语义是「丢弃输出 / 标准流」。它既不在工作区里，也不是任何人的产出 ——
+// 把它当成写目标会同时坏掉三件事：
+//   1. 台账里多一条**用不上的越界请求**（噪声，且会把真正的越界请求淹掉）；
+//   2. 拦截文案给出**无意义的批准命令**（批准它也不会让任何东西生效）；
+//   3. `node build.js 2>/dev/null` 这种极常见的写法被整条拦下 ——
+//      护栏一旦变成噪音，worker 只会绕开它。
+//
+// 收进来的形态：
+//   POSIX     ：/dev/null /dev/zero /dev/stdout /dev/stderr /dev/stdin
+//   Windows  ：NUL（大小写不敏感）、NUL:、\\.\NUL
+//   PowerShell：$null（`> $null` 是它的丢弃写法）
+//
+// 刻意**不**收的形态：
+//   'null' —— bash 里 `> null` 会真的建一个叫 null 的文件，那是真实写目标；
+//   '/dev/urandom' '/dev/random' —— 是真实设备，不是丢弃口。
+const NULL_DEVICE_PATHS = new Set([
+  '/dev/null', '/dev/zero', '/dev/stdout', '/dev/stderr', '/dev/stdin'
+]);
+
+export function isNullDevicePath(p) {
+  const t = trimPathPunct(String(p || '')).replace(/\\/g, '/').trim();
+  if (!t) return false;
+  const low = t.toLowerCase();
+  if (NULL_DEVICE_PATHS.has(low)) return true;
+  // Windows 空设备：NUL / NUL: / \\.NUL（归一化后是 //./nul）
+  if (low === 'nul' || low === 'nul:' || low === '//./nul') return true;
+  // PowerShell 的丢弃口
+  if (low === '$null') return true;
+  return false;
+}
+
+// 这个 token 是不是「指向空设备」？
+//
+// 覆盖两种形态（缺一不可）：
+//   单独的空设备路径：'/dev/null' 'NUL'
+//   重定向形态：'>/dev/null' '2>/dev/null' '&>/dev/null' '>NUL'
+//     —— 运算符与目标贴在一起时，token 本身不是设备路径，但它的**目标**是。
+//     `2>/dev/null` 是最常见的 stderr 重定向写法，漏掉它就等于没修。
+export function isNullDeviceToken(tok) {
+  const t = trimPathPunct(String(tok || '')).trim();
+  if (!t) return false;
+  if (isNullDevicePath(t)) return true;
+  const m = t.match(/^(\d*|&)?(>>|>)(.*)$/);
+  if (!m) return false;
+  const target = trimPathPunct(m[3] || '').trim();
+  return !!target && isNullDevicePath(target);
+}
+
 // 写操作动词：这些动词后面的参数就是路径目标。
 // 目录型目标（rm -rf config）不含扩展名，按扩展名规则识别不到，
 // 必须靠「动词 + 参数」这一层兜住，否则整类目录越界删除直接逃逸（D-02）。
@@ -1957,14 +2034,17 @@ export function extractWriteTargets(cmd) {
       if (a === '&&' || a === '||' || a === ';' || a === '|' || a === '>' || a === '>>') break;
       if (WRITE_TARGET_VERBS.includes(a.toLowerCase())) break;
       const t = trimPathPunct(a);
-      if (t) out.push(t);
+      // 空设备不是写目标（D-85）：`rm foo 2>/dev/null` 里的 '/dev/null'
+      // 既不是项目资产，也不该进台账的待审清单（批准它也不会让任何东西生效）。
+      if (t && !isNullDeviceToken(a)) out.push(t);
     }
   }
   for (let i = 0; i < toks.length - 1; i++) {
     if (toks[i] === '>' || toks[i] === '>>') {
       const a = toks[i + 1];
       const t = a && !a.startsWith('-') ? trimPathPunct(a) : '';
-      if (t) out.push(t);
+      // 空设备不是写目标（D-85）
+      if (t && !isNullDevicePath(t)) out.push(t);
     }
   }
   return out;
@@ -1974,6 +2054,33 @@ export function hasWriteVerb(cmd) {
   const toks = splitCommandTokens(cmd).map((t) => t.toLowerCase());
   return toks.some((t) => WRITE_TARGET_VERBS.includes(t)) ||
     toks.includes('>') || toks.includes('>>');
+}
+
+// 这条命令里有没有「对资产的写操作」？
+//
+// 与 hasWriteVerb 的差别只有一处：**重定向到空设备不算写操作**。
+//
+// 为什么：空设备不是写目标（D-85）—— `cmd > /dev/null` 没有写任何项目资产，
+// 不该触发「写操作但识别不出目标路径」那条兜底拒绝（否则只是把拦的理由换了，
+// 那等于把缺陷换个形状留着）。
+//
+// 刻意保持不变的两点（避免口径漂移）：
+//   · 真正的写动词（rm / cp / mv …）仍然算写操作 —— 哪怕参数全是空设备，
+//     也宁可多判不可漏判；
+//   · 重定向目标取不到（`cmd >`）仍然算写操作 —— 解析不出即拒绝。
+export function hasAssetWriteVerb(cmd) {
+  const toks = splitCommandTokens(cmd);
+  if (toks.some((t) => WRITE_TARGET_VERBS.includes(String(t).toLowerCase()))) return true;
+  for (let i = 0; i < toks.length; i++) {
+    const t = String(toks[i] || '');
+    if (t !== '>' && t !== '>>') continue;
+    const nx = toks[i + 1];
+    const target = (nx === undefined || String(nx).startsWith('-')) ? '' : trimPathPunct(String(nx)).trim();
+    if (!target) return true;                    // 目标取不到 -> 解析不出 -> 算写操作
+    if (isNullDevicePath(target)) continue;      // 空设备不是写目标
+    return true;
+  }
+  return false;
 }
 
 // bash 的只读命令白名单（S3）。命中白名单按读判定，其余按写判定。

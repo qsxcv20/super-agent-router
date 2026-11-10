@@ -101,9 +101,14 @@ node docs/audit/.tmp-release/selfcheck-v056.mjs --root plugin
 node tools/run-tests.mjs --all --root plugin --repo .
 ```
 
-十一套全部 **0 FAIL**。逐套 pass 数（发布前最后一次全量实测）：
+十一套全部 **0 FAIL**。逐套 pass 数（**发布前最后一次全量实测**）：
 chain 70、d27-mut 14、dispatch-release 58、e2e 53、guard 228、hooks 29、
 lessons 65、records 52、roster 38、scope-amend 119、scope 38。
+
+> **订正（v0.5.7 收口时核实）**：上面「十一套 / 764 条」是**发布前最后一次全量实测**的数；
+> 随后同一版本内又新增了第 12 套 `tests/ledger-test.mjs`（23 条），
+> **随 v0.5.6 出货的树实测是十二套 787 条** —— 独立验收方在收口后的最终复核里独立跑出，
+> 见 `docs/audit/verification-v056-final.md` §4.4。数字以**出货树**为准，不是以草稿时刻为准。
 
 **口径说明（两次实测的差异已在发布前查清）**：
 

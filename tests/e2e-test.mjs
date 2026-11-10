@@ -223,6 +223,12 @@ if (process.env.SAR_MUTATION === '1') {
         mutReplace(path.join(mut, 'scripts', 'watchdog.mjs'),
           '      const abs = absolutizePath(expandHomePath(p, HOME_DIR), root);',
           '      const abs = absolutizePath(p, root); // MUT-D72d：家目录展开被摘掉');
+        // D-80 起，家目录展开已经**下沉到 lib.mjs 的 absolutizePath() 内部** ——
+        // 只摘 watchdog 侧那一环，链路仍然成立（N-03 不会转红）。
+        // 变异体要断的是**整条链**：两处都摘，N-03 才真的塌。
+        mutReplace(path.join(mut, 'scripts', 'lib.mjs'),
+          "  const raw = expandHomePath(String(p || '').replace(/\\\\/g, '/').trim(), homeDir());",
+          "  const raw = String(p || '').replace(/\\\\/g, '/').trim(); // MUT-D72d：家目录展开被摘掉");
       }
     },
     {

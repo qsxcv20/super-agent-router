@@ -472,10 +472,10 @@ node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\scope-amend.m
 - **复合层载荷把命令放进变量时判不了**（v0.5.6 记为设计边界，不是缺陷）：
   `run_code` 里的复合载荷若把危险命令先塞进变量再执行，护栏取不到命令文本，判不了。
   这是复合层判定的**固有限制**，已写进契约与注入，留成明示边界而不是隐性缺口。
-- **家目录展开目前只在收尾判定这一侧做**（v0.5.6 的 D-80 只修了一半）：
-  `~` / `$HOME` / `%USERPROFILE%` 的展开做在 watchdog（收尾校验）侧；
-  底层路径折算函数本身仍不展开。
-  影响面：经由收尾判定的那条路已不受影响；不经由它的其它路径仍可能把家目录下的真实文件判成「不存在」。
+- **家目录展开已下沉到 lib 层**（v0.5.7 的 D-80）：
+  `~` / `$HOME` / `%USERPROFILE%` 的展开现在做在底层路径折算那一步（早于「拼工作区根」），
+  调用方不必各自记得展开 —— 口径只有一处，不会再出现「某个脚本忘了展开」。
+  取不到家目录时退回「不展开」，**不会凭空造一个家目录出来**。
 
 **所以真正的防线是这三条**，而不是「脚本层绝对拦得住」：
 
@@ -486,6 +486,53 @@ node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\scope-amend.m
 
 一句话：**别把这套机制当成沙箱来用，要当成「可审计的护栏」来用。**
 它的价值在于让越界**看得见、留得痕、可复核**，而不是声称越界不可能发生。
+
+## 空设备：`> /dev/null` 不再被当成写目标（v0.5.7）
+
+**这一条是使用者能直接感觉到的变化。**
+
+以前 bash 重定向到**空设备**会被当成写目标，于是：
+
+- 台账里多一条**用不上的越界请求**（噪声，且会把真正的越界请求淹掉）；
+- 拦截文案给出**批准了也没意义**的批准命令（批准它也不会让任何东西生效）；
+- `node build.js 2>/dev/null` 这种极常见的写法被整条拦下。
+
+现在空设备从写目标与判定对象里剔掉了。收进来的形态：
+
+| 平台 | 形态 |
+|---|---|
+| POSIX | `/dev/null` `/dev/zero` `/dev/stdout` `/dev/stderr` `/dev/stdin` |
+| Windows | `NUL`（大小写不敏感）/ `NUL:` / `\\.\NUL` |
+| PowerShell | `$null` |
+
+**两条可直接对照的行为变化**：
+
+| 命令 | 之前 | 现在 |
+|---|---|---|
+| `tee /dev/null` | **DENY** | **ALLOW** |
+| `dd of=/dev/null` | DENY | **仍然 DENY** |
+
+第二条是**刻意留的保守项**，不是漏判：`of=` 是参数形态，护栏对它的识别保守，
+所以宁可多判不可漏判。**别把这两条读成「空设备一律放行」。**
+
+**边界没变的部分**：
+
+- 真实路径越界**照常**记账并拦；
+- 真实写动词（`rm` / `cp` / `mv` …）**仍然**算写操作；
+- 重定向目标**解析不出**时（`cmd >`）**仍然**兜底拒绝 —— 解析不出即拒绝，不放行。
+
+**刻意不收进去的形态**：`/dev/urandom`、`/dev/random` 是**真实设备**（不是丢弃口）；
+`> null` 在 bash 里会真的建一个叫 `null` 的文件，那是**真实写目标**。
+
+**要处理已有的历史待审项**：这次**只堵产生侧** —— 台账里**已经记着**的历史 `/dev/null` 待审项，
+`--grant` 仍会把它写进 scope（批准它没有意义）。
+需要人工在待审清单里**拒绝**它们：
+
+```powershell
+node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\scope-amend.mjs" --list
+node "$env:USERPROFILE\.minimax\plugins\super-agent-router\scripts\scope-amend.mjs" --deny req_xxx --approver <父会话 id> --reason "空设备不是写目标"
+```
+
 
 ## brief 是 worker 唯一的协议载体
 

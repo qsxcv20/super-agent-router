@@ -29,7 +29,8 @@ import {
   readStdin, parseInputStrict, readLedger, updateLedger, inScope,
   findBinding, upsertBinding, readBriefFromTranscript, scopeOverlaps,
   workspaceRoot, resolveAgentKey, isPathToken, extractPathTokens,
-  splitCommandTokens, isReadOnlyCommand, extractWriteTargets, hasWriteVerb,
+  splitCommandTokens, isReadOnlyCommand, extractWriteTargets,
+  isNullDeviceToken, hasAssetWriteVerb,
   DANGEROUS_COMMAND, detectDangerousAccountCommand, detectDangerousInComposite,
   hasCommandSubstitution, readOnlyScopeHit,
   TOOL_DEPLOY, TOOL_APP_PUBLISH, TOOL_AGENT_DELETE, TOOL_AGENT_UPDATE, TOOL_AGENT_CREATE,
@@ -636,7 +637,14 @@ function targetsOf() {
     const readOnly = isReadOnlyCommand(cmd);
     const m = readOnly ? 'read' : 'write';
     const toks = extractPathTokens(cmd);
-    const targets = readOnly ? toks : [...new Set([...toks, ...extractWriteTargets(cmd)])];
+    const merged = readOnly ? toks : [...new Set([...toks, ...extractWriteTargets(cmd)])];
+    // 空设备（/dev/null、NUL、/dev/stdout、$null …）不是项目资产，也不是写目标（D-85）。
+    //
+    // 为什么在这里剔：空设备既不在工作区、也不该被当成项目资产 ——
+    // 留着它会记一条**用不上的越界请求**（噪声，且会把真正的越界请求淹掉），
+    // 拦截文案还会给出**无意义的批准命令**（批准它也不会让任何东西生效）。
+    // 剔掉的是「设备」这一类形态，别的路径判定一分不变。
+    const targets = merged.filter((t) => !isNullDeviceToken(t));
     return { mode: m, targets, raw: cmd, readOnly };
   }
   if (tool === 'glob' || tool === 'grep' || tool === 'search') {
@@ -723,7 +731,7 @@ if (tool === 'bash') {
   // 以前这里直接 process.exit(0)，整条写通道等于没设防（D-02）。
   // full 等级成员的边界 = 工作区本身，不再需要逐路径判定；
   // 危险命令与账号级动作在上游已经拦过，这里豁免「识别不出目标路径」这一条。
-  if (!got.readOnly && !targets.length && hasWriteVerb(cmd) && !fullTier) {
+  if (!got.readOnly && !targets.length && hasAssetWriteVerb(cmd) && !fullTier) {
     deny('[super-agent-router] 越界拦截：命令里有写操作，但一个可判定的目标路径都识别不出来，' +
       '无法验证是否越界。命令：' + cmd.slice(0, 160) +
       '。请改成能识别出目标路径的写法，或先更新 scope 再派工。');

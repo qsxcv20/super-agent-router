@@ -116,8 +116,8 @@ MCode 会自动扫描本地插件目录，无需重启。
 ### 开发者
 
 ```bash
-node tools/run-tests.mjs --all --root plugin --repo .   # 十一套全跑（仓库副本）
-node tools/run-tests.mjs --all --repo .                  # 十一套全跑（安装副本）
+node tools/run-tests.mjs --all --root plugin --repo .   # 十三套全跑（仓库副本）
+node tools/run-tests.mjs --all --repo .                  # 十三套全跑（安装副本）
 node tools/run-tests.mjs scope-amend-test --repo .       # 单跑一套
 ```
 
@@ -156,7 +156,7 @@ node tests/scope-amend-test.mjs  # 权限自动审核与等级
 │   ├── agent-snapshots/          # 改 prompt 前的快照
 │   └── STATUS.md                 # 项目当前状态
 │
-├── tests/                       # 十一套回归测试（项目资产，不是私有记忆）
+├── tests/                       # 十三套回归测试（项目资产，不是私有记忆）
 │   └── *-test.mjs
 │
 ├── tools/                       # 工装

@@ -74,3 +74,9 @@ transcript 里的 brief 解析、派工台账的生命周期。产出的改动�
 - 验收：verifier
 - 写入者：parent:mvs_9bdda202ae274c909a5b4352fc45a471 · 会话 mvs_9bdda202ae274c909a5b4352fc45a471 · 2026-11-10T17:17:22.290Z
 
+### 2026-11-10 · 闭环 D-80（家目录展开下沉到 absolutizePath）与 D-85（空设备不是写目标），并补齐两条永久断言 · 编排机制边界判定改造：scope 语义、工具通道语义、transcript brief 解析、派工台账生命周期与名额回收
+- 做法：把家目录展开下沉到「解析成绝对路径」这一步（早于拼工作区根），口径只留一处；空设备从写目标提取与判定对象两处剔掉，真实路径越界照拦、真实写动词仍算写、解析不出仍兜底拒绝；每条缺陷配专属断言与语义层变异体，矩阵比对升级为「恰好转红」（多红报 EXTRA-RED、少红报 MISS）
+- 证据：plugin/scripts/lib.mjs 与 plugin/scripts/guard.mjs；docs/audit/fix-d80-d85.md；tests/fix-d80-d85-test.mjs（49 条断言 + 6 个变异体）；独立复验 docs/audit/verification-v060.md 判 PASS_WITH_CONDITIONS、docs/audit/verification-v061.md 判 PASS（验收方用它自己上一轮的锚点复现：F-1 由 41/41 全绿变 2 FAIL、F-2 变 5 FAIL）
+- 验收：verifier
+- 写入者：parent:mvs_9bdda202ae274c909a5b4352fc45a471 · 会话 mvs_9bdda202ae274c909a5b4352fc45a471 · 2026-11-10T22:07:02.344Z
+

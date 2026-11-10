@@ -102,7 +102,7 @@ $env:SAR_MUTATION_LEDGER='1'; node tests/ledger-test.mjs
 | 文件 | 作用 |
 |---|---|
 | `tools/ledger-check.mjs` | 严格解析 + 六条检查；CLI：`--json` / 指定文件 |
-| `tests/ledger-test.mjs` | 回归套件：基线（真实台账）+ 六个变异体；已被 `tools/run-tests.mjs --all` 自动发现（十二套之一） |
+| `tests/ledger-test.mjs` | 回归套件：基线（真实台账）+ 六个变异体；已被 `tools/run-tests.mjs --all` 自动发现（十三套之一） |
 | `docs/audit/ledger-check.md` | 本说明（口径、变异体、已知缺口） |
 
 工具与套件**不写** `.superagent/` 下的任何东西；套件夹具自带完整环境
