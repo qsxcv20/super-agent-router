@@ -1,5 +1,7 @@
 # super-agent-router
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 把「会话」当系统：**路由 → 组队 → 派工 → 验收 → 复盘** 五段闭环。
 
 受 DeepSeek 2026-10-31 公开的 Super-agent 架构启发，在 MiniMax Code 上落地。
@@ -94,24 +96,89 @@ Worker 读方法论时自然看到上次怎么做的，且方法论与履历同�
 
 ## 安装
 
-### 普通使用者
+### 一键安装（推荐）
+
+需要 **Windows + PowerShell 5.1 或更高**（脚本在 PS 5.1 上实测过）。
+
+```powershell
+# 1. 克隆仓库
+git clone https://github.com/qsxcv20/super-agent-router.git
+cd super-agent-router
+
+# 2. 一条命令安装
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+
+# 3. 新开一个会话 —— Hook 按会话激活，不新开不生效
+```
+
+脚本按固定顺序做这些事，**任何一步不通过就非零退出、不装一半**：
+
+1. 检查 `node` 在不在（Hook 全靠 node 驱动）
+2. 校验源包：`plugin.json` 在不在、`name` 与安装目录名是否一致、`hooks.json` 引用的每个脚本是否都存在
+3. 装到 `%USERPROFILE%\.minimax\plugins\super-agent-router\`
+   - 目标已存在且版本相同 → 报「已是最新」，**不重装**
+   - 目标已存在且版本不同 → 先整份备份到 `.backup\super-agent-router-<时间戳>\`，再装新版
+4. 装完用**文件数 + SHA256 逐文件比对**复核副本与源是否一致
+
+常用参数：
+
+```powershell
+# 换个安装根目录
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Target "D:\minimax-plugins"
+
+# 顺便给某个项目播种一份状态层（.superagent）
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Project "D:\my-project"
+
+# 只校验不安装：一个字节都不写
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -VerifyOnly
+```
+
+`-Project` 播种的是**空名录**（`roster.json` 的 `members` 是空数组，默认 0 个成员）加上**四个**模板文件：
+`methods/_TEMPLATE.md`、`lessons/_TEMPLATE.md`、`incidents/_TEMPLATE.md`、`agent-snapshots/_README.md`
+（外加一份 `STATUS.md` 和一个空的 `changes.log`）。
+**不会**把本仓库的成员、方法论、错题本复制给你 —— 那些是本项目的私有记忆。
+已存在的文件一律不覆盖（你的数据优先）。
+
+装完**必须新开一个会话**，然后提一句编排型请求，看到注入里出现 `[super-agent-router]` 就说明通了。
+
+路径参数（`-Target` / `-Project`）或家目录名若含**尾随空白**，脚本会**报错退出、不做任何改动** ——
+尾随空格是路径身份的一部分，被静默裁掉的话，脚本会作用到**另一个**目录。
+
+### 备选：手工复制
+
+没有 Windows，或想自己控制文件位置时，手工复制同样有效：
 
 ```bash
-# 1. 复制插件包
+# 复制插件包
 cp -r plugin ~/.minimax/plugins/super-agent-router
-
-# 2. 复制项目状态层到你的工作区
-cp -r .superagent <你的项目目录>/.superagent
 ```
 
 Windows:
 
 ```powershell
 Copy-Item -Recurse plugin "$env:USERPROFILE\.minimax\plugins\super-agent-router"
-Copy-Item -Recurse .superagent "<你的项目目录>\.superagent"
 ```
 
 MCode 会自动扫描本地插件目录，无需重启。
+
+项目状态层（`.superagent`）建议用 `install.ps1 -Project` 播种 —— 它只放**空名录 + 四个模板**，
+不会把本仓库的成员方法论与错题本带过去。
+
+若坚持手工复制整份 `.superagent`，复制后**必须清干净**下面这些，否则会把本项目的私有记忆带给第三方：
+
+| 要处理的 | 处理方式 |
+|---|---|
+| `roster.json` | **删掉** —— 里面有本项目的成员名录（owns / accepts / reject / 提权留痕） |
+| `STATUS.md` | **删掉** —— 本项目的当前状态与作业规则 |
+| `changes.log` | **删掉** —— 本项目的改动留痕 |
+| `methods/` | 只留 `_TEMPLATE.md`，其余删掉 |
+| `lessons/` | 只留 `_TEMPLATE.md`，其余删掉 |
+| `incidents/` | 只留 `_TEMPLATE.md`，其余删掉 |
+| `agent-snapshots/` | 只留 `_README.md`，其余删掉 |
+
+（或者干脆自己手写一个 `roster.json`，`members` 写成空数组 `[]`。）
+
+手工复制**没有**幂等与备份（重复执行直接覆盖），需要这两项就用一键安装。
 
 ### 开发者
 
@@ -133,12 +200,79 @@ node tests/records-test.mjs  # 履历机制
 node tests/scope-amend-test.mjs  # 权限自动审核与等级
 ```
 
+#### 怎么复跑安装脚本的自测
+
+`install.ps1` / `uninstall.ps1` 的行为断言在 `tools/install-selftest/` 里，**一条命令复跑全部套件**：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\install-selftest\run-all.ps1
+```
+
+| 套件 | 覆盖 | 断言条数 |
+|---|---|---|
+| `sandbox-test.ps1` | 安装 / 卸载 / 幂等 / 备份 / 播种 / 哈希自校验（沙箱实跑） | 41 |
+| `sandbox-test2.ps1` | 跨插件目录保护、`-Purge` 不误伤同级目录、**错目标零删除**、**尾随反斜杠**装卸、**畸形命令行零副作用** | 44 |
+| `trailing-space-test.mjs` | **尾随空格路径身份**（构造「同名只差尾随空格」的兄弟根；断言必须命中守卫消息） | 39 |
+| `verify-seed.mjs` | 播种内容与安装副本的逐字节校验 | 21 |
+| `check-readme-consistency.mjs` | 本文件与脚本的参数 / 口径逐字对账（含条数声明的防漂检查） | 131 |
+| `run-all-exit-code-test.mjs` | **自检红 ⇒ 退出码非 0 且横幅不许说谎**（X1 的钉子：真跑一份 run-all.ps1 副本，篡改头部触发红 + 撞名变异对照） | 18 |
+| `run-all.ps1` | 上面各套件的**一条命令入口**：逐套件核对条数、汇总退出码与横幅 | 8 |
+
+自测的**退出码可信**：自检里有红 ⇒ 退出码非 0、横幅不会说「全部通过」。
+（`run-all-exit-code-test.mjs` 会真跑一份 run-all.ps1 副本、把它逼红来验这件事，不是只比对源码文字。）
+
+注意：**这套自测仅在 Windows 上跑**（依赖 `powershell` + PowerShell 5.1）。
+自测对**路径形态无要求**：仓库路径 / 沙箱路径含空格或含中文都能跑 ——
+需要传「末尾带反斜杠」的路径时，用 `-Command` 把参数整体留在子进程里、参数值用单引号包住，
+参数原样到达，不受 Windows 命令行引号规则影响。
+沙箱建在 `%TEMP%` 下，**不在仓库里**；运行时会把 `%USERPROFILE%` 重定向到沙箱内的假家目录，
+所以**真实安装目录与真实运行时台账不会被碰到**。
+
+---
+
+## 卸载
+
+```powershell
+# 默认：移到 .trash\，可恢复（后悔了搬回去就行）
+powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
+
+# 彻底删除插件目录
+powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Purge
+
+# 连运行时台账一起清
+powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Purge -PurgeData
+```
+
+要点：
+
+- 默认**不删**：插件目录被移到 `%USERPROFILE%\.minimax\plugins\.trash\super-agent-router-<时间戳>\`，脚本会打印位置和「怎么彻底删」
+- `-Purge` 才真删。删前脚本做**两层核对**：
+  - **路径级（结构自检，不构成独立验证）** —— 末段必须是 `super-agent-router`、目标必须在安装根之下。
+    这一层的期望值与被检值同源（都是脚本自己拼出来的），只防实现层面的错位，**挡不住「作用到了别的目录」**。
+  - **内容级（唯一有牙齿的一条）** —— 读目标目录的 `.minimax-plugin\plugin.json` 核对 `name`，
+    确认它**真的是本插件目录**。只要作用到了别的目录（别的插件 / 没有 manifest / 名字不符），
+    一律**非零退出，且目标目录一个字节都不删**。
+- 路径参数或家目录名含**尾随空白** ⇒ 一律报错退出、不做任何改动
+- `-Target` 带**尾随反斜杠**（如 `-Target "D:\plugins\"`）也能正常装、正常卸 ——
+  比较前会把两侧路径的**尾随分隔符**归一（只动分隔符，空白一个字都不动）
+- ⚠️ **命令行里路径末尾的反斜杠会被闭引号吃掉**：`-Target "D:\My Plugins\"` 在 cmd / PowerShell 里
+  实际被解析成 `D:\My Plugins"`（**多出一个引号**）。脚本会**直接报错并点名这个原因**，
+  **不会**静默帮你把引号去掉再继续跑（那会作用到你没指定的目录）：
+  - 正确写法一：去掉末尾反斜杠 —— `-Target "D:\My Plugins"`
+  - 正确写法二：把末尾写成两个反斜杠 —— `-Target "D:\My Plugins\\"`
+  - 路径**含空格或含中文**时尤其容易踩这个坑（Windows 的引号规则只在加引号时才生效）
+- `-PurgeData` 才清运行时台账（`%USERPROFILE%\.minimax\v2\plugin-data\hooks\super-agent-router\`）
+- **项目里的 `.superagent/` 一律不动** —— 那是你的项目数据，不是插件，要删自己删
+- 卸载后请**新开一个会话**，旧会话里的 Hook 还在
+
 ---
 
 ## 目录结构
 
 ```
 .
+├── install.ps1                  # 一键安装（Windows PowerShell 5.1+）
+├── uninstall.ps1                # 卸载（默认移到 .trash\，可恢复）
 ├── plugin/                      # 插件包（复制到 ~/.minimax/plugins/）
 │   ├── .minimax-plugin/plugin.json
 │   ├── hooks/hooks.json          # 7 个 handler（含 SessionStart）
@@ -163,7 +297,8 @@ node tests/scope-amend-test.mjs  # 权限自动审核与等级
 │   ├── run-tests.mjs             # 验收工装（自动发现 tests/*-test.mjs）
 │   ├── deploy-plugin.mjs         # 部署到安装目录
 │   ├── sync-github.mjs           # 同步到 GitHub
-│   └── verify-github.mjs         # 逐文件核对远端内容
+│   ├── verify-github.mjs         # 逐文件核对远端内容
+│   └── install-selftest/         # 安装/卸载脚本自测（仅 Windows）
 │
 ├── docs/audit/                  # 独立验收与专项审计报告
 │
@@ -246,3 +381,13 @@ DeepSeek Harness 团队《Super-agent 设计探索：迈向更自主的 Agent �
 （2026-10-31），及 `deepseek-ai/dsh-superagent-prototype`（MIT）。
 
 本项目是受其启发的独立实现，不依赖 DeepSeek 的代码。
+
+---
+
+## 许可
+
+[MIT](LICENSE) —— Copyright (c) 2026 yang2。
+
+你可以自由使用、复制、修改、合并、再分发本项目（含商用），
+唯一要求是**在副本里保留版权声明与许可声明**。
+本项目按原样提供，**作者不承担任何担保责任**。
