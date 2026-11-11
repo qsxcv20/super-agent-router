@@ -1373,13 +1373,13 @@ D-25 不是台账里原有的条目，是**独立复验收尾时的运行时取�
 | D-72 | 已修（待独立复验） | sa-mechanism-fix（watchdog 否定式判定） |
 | D-78 | 已修（待独立复验） | sa-mechanism-fix（子句级归属） |
 | D-79 | 已修（待独立复验） | sa-mechanism-fix（block 规则编号） |
-| D-80 | 已修（v0.5.7，待独立复验） | sa-mechanism-fix（展开下沉到 absolutizePath 内部） |
+| D-80 | 已修（v0.5.7，**已独立复验 PASS** — `verification-v061.md`） | sa-mechanism-fix（展开下沉到 absolutizePath 内部） |
 | D-81 | 已修（待独立复验） | sa-mechanism-fix（通配符按模式整体识别） |
 | D-82 | 已修（待独立复验） | 父会话（目录名逐字比较 + 5 条专属断言） |
 | D-75 | 已修（待独立复验） | sa-mechanism-fix（升级显式留痕 + 别名归一） |
 | D-83 | 已修（待独立复验） | sa-mechanism-fix（路径写法归一） |
 | D-84 | 已修（待独立复验） | sa-mechanism-fix（audit_logged 不静默） |
-| D-85 | 已修（v0.5.7，待独立复验） | sa-mechanism-fix（空设备从写目标与判定对象里排除） |
+| D-85 | 已修（v0.5.7，**已独立复验 PASS** — `verification-v061.md`） | sa-mechanism-fix（空设备从写目标与判定对象里排除） |
 | D-73 | 已修（待独立复验） | sa-mechanism-fix（三态存在性 + 降级口径，父会话裁决降级成立条件） |
 | D-74 | 已修（父会话） | 父会话（hooks 危险 matcher 对称） |
 | D-76 | 已记为诚实边界 | — |
