@@ -86,3 +86,9 @@ transcript 里的 brief 解析、派工台账的生命周期。产出的改动�
 - 验收：verifier
 - 写入者：parent:mvs_9bdda202ae274c909a5b4352fc45a471 · 会话 mvs_9bdda202ae274c909a5b4352fc45a471 · 2026-11-11T18:25:56.984Z
 
+### 2026-11-12 · 编排机制边界判定改造：scope 语义、工具通道语义、transcript brief 解析、派工台账生命周期与名额回收 · 修 D-97：闸门读错 transcript 文件（兼容投影 vs 会话库），活体拦截证据已取到
+- 做法：先把夹具换成运行时真读的那份文件（Claude 兼容投影），再按文件形态择一命名空间 + 来源择一计数（投影优先、会话库回退，两套口径绝不混数），并补「内层 payload ↔ 外层条目」指纹对齐；D-91 的 5 个锚点逐字未动，断言补强只改 tests/。
+- 证据：plugin/scripts/loop-gate.mjs（投影口径 :427-481、择一分支 :727-772）；tests/loop-gate-test.mjs + tests/fixtures/d97-hook-compatible.jsonl（14 套 / 910 条 / 0 FAIL，六个变异体 MISS=0）；docs/audit/fix-d97.md、docs/audit/fix-d97-verification.md（VERDICT PASS_WITH_CONDITIONS）、docs/audit/d97-live-evidence.md（活体第 6 次 PTC_TOOL_BLOCKED）
+- 验收：verifier
+- 写入者：parent:mvs_9bdda202ae274c909a5b4352fc45a471 · 会话 mvs_9bdda202ae274c909a5b4352fc45a471 · 2026-11-12T11:53:12.261Z
+

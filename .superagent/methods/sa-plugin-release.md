@@ -81,3 +81,9 @@
 - 验收：verifier
 - 写入者：parent:mvs_9bdda202ae274c909a5b4352fc45a471 · 会话 mvs_9bdda202ae274c909a5b4352fc45a471 · 2026-11-11T06:15:02.168Z
 
+### 2026-11-12 · 插件包版本发布：版本号与描述同步、CHANGELOG 与面向使用者的 README 产出、包内自洽性校验 · 发布 v0.5.10：修 D-99 安装器幂等判断（同版本改码重装不生效），并公开发布 GitHub Release
+- 做法：幂等判断从「版本号相等」改成「逐文件 SHA256 内容相等」，复用安装器已有的 Get-FileMap / Compare-FileMaps，另加 -Force；先把每条行为写成断言再动脚本，并配语义变异对照证明断言会红；发布走 git archive 打 zip（内容严格 = 该 commit 的 tree）再发 Release。
+- 证据：install.ps1 第 6 节 :331-360；tools/install-selftest/install-idempotency-test.ps1（24 条断言，退回版本号口径的变异体必红）+ run-all.ps1（7 套件 / 331 条 / 0 FAIL）；plugin/CHANGELOG.md 的 0.5.10 段；docs/audit/release-v0510.md、docs/audit/verification-v0510.md（VERDICT PASS_WITH_CONDITIONS）；GitHub Release v0.5.10（tag c3586a70d7，资产 1,722,102 B，185/185 blob sha 一致）
+- 验收：verifier
+- 写入者：parent:mvs_9bdda202ae274c909a5b4352fc45a471 · 会话 mvs_9bdda202ae274c909a5b4352fc45a471 · 2026-11-12T11:53:12.780Z
+
