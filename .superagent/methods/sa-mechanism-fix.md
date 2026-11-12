@@ -98,3 +98,9 @@ transcript 里的 brief 解析、派工台账的生命周期。产出的改动�
 - 验收：verifier
 - 写入者：parent:mvs_9bdda202ae274c909a5b4352fc45a471 · 会话 mvs_9bdda202ae274c909a5b4352fc45a471 · 2026-11-12T16:33:07.460Z
 
+### 2026-11-12 · 编排机制边界判定改造：scope 语义、工具通道语义、transcript brief 解析、派工台账生命周期与名额回收 · 修 D-110：版本一致性断言「造故障的手法」自己坏了（写死版本号 ⇒ 升版即假红）
+- 做法：把写死的版本号改成从假仓库 manifest 派生（读当前版本 → 末段 +1），并给「造故障」这件事本身加一道自检：每次注入后断言字节真的变了，没变就当场停下并报「造故障的手法失效了」；配 5 条专属断言 + 2 个能被证伪的语义变异体。
+- 证据：tests/zero-debt-test.mjs（nextVersion / bumpManifestVersion / injectFault + D-110-D1~D5）；tests/fixtures/zero-debt-mutation-matrix.mjs（20 个变异体，MISS=0）；全量回归 16 套 / 1051 条 / 0 FAIL；独立验收 docs/audit/verification-d110.md（6 项全 PASS，验收方自造两个变体验证专属断言会红）
+- 验收：verifier
+- 写入者：parent:mvs_9bdda202ae274c909a5b4352fc45a471 · 会话 mvs_9bdda202ae274c909a5b4352fc45a471 · 2026-11-12T18:23:56.165Z
+

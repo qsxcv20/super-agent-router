@@ -86,3 +86,10 @@
 - 证据：install.ps1 第 6 节 :331-360；tools/install-selftest/install-idempotency-test.ps1（24 条断言，退回版本号口径的变异体必红）+ run-all.ps1（7 套件 / 331 条 / 0 FAIL）；plugin/CHANGELOG.md 的 0.5.10 段；docs/audit/release-v0510.md、docs/audit/verification-v0510.md（VERDICT PASS_WITH_CONDITIONS）；GitHub Release v0.5.10（tag c3586a70d7，资产 1,722,102 B，185/185 blob sha 一致）
 - 验收：verifier
 - 写入者：parent:mvs_9bdda202ae274c909a5b4352fc45a471 · 会话 mvs_9bdda202ae274c909a5b4352fc45a471 · 2026-11-12T11:53:12.780Z
+
+### 2026-11-12 · 插件包版本发布：版本号与描述同步、CHANGELOG 与面向使用者的 README 产出、包内自洽性校验 · 发布 v0.5.11：台账自洽机器校验 + 成员的持久身份口径（D-100~D-110）
+- 做法：先把每条行为写成断言再动发布物；发布物里每个数字都回查终稿树实测值；自查发现问题（如 D-110 假红）如实写进发布说明并交回原成员修，不改测试让自己变绿；0.5.10 及更早的 CHANGELOG 历史段逐字未改；诚实边界四条原文不许弱化。
+- 证据：plugin/.minimax-plugin/plugin.json version=0.5.11；plugin/CHANGELOG.md 顶部 0.5.11 段（含发布前自查发现 D-110 一节）；两份 README 版本字面量与本版章节；docs/audit/release-v0511.md；包内自洽 check-version-consistency 12 PASS / check-readme-consistency 144 PASS / run-all.ps1 8 套件 343 条 0 FAIL；回归 16 套 / 1051 条 / 0 FAIL；GitHub Release v0.5.11（tag 46c2dcfe9f，资产 1,892,008 B，219/219 blob sha 一致）；独立验收 docs/audit/verification-v0511-release.md VERDICT PASS
+- 验收：verifier
+- 写入者：parent:mvs_9bdda202ae274c909a5b4352fc45a471 · 会话 mvs_9bdda202ae274c909a5b4352fc45a471 · 2026-11-12T18:06:53.873Z
+

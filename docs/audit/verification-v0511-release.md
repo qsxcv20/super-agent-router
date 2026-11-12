@@ -390,3 +390,20 @@ matcher: read|glob|grep|list|search|write|edit|multiedit|notebookedit|bash|run_c
 | c68.log | 同上（独立重跑） |
 | ledger-check.out / member-identity-check.out | 两条校验命令的原始输出 |
 | ledger2.ps1 / deep.ps1 / scan.ps1 / recount.ps1 / c68.ps1 / ledger-parse.ps1 | 我的核验脚本 |
+---
+
+## 附录二：父会话处置说明（报告出具之后的追加，如实转述）
+
+本报告出具后，父会话按 §7 的三条 P3 建议做了修改并重新提交（commit `0ac57d6`）：
+
+| P3 | 处置 | 落点 |
+|---|---|---|
+| P3-1（台账摘要陈旧 113） | 摘要四个 113 改为 **114**，并复跑 `node tools/ledger-check.mjs`（12 项全 PASS、114 条、待复核 0） | `plugin/CHANGELOG.md` 0.5.11 段「怎么验证」 |
+| P3-2（「68 处」不可复现） | 补出处说明：**该计数取自 D-105 修复当时的中间快照**，现树已归一 ⇒ 不可在当前树上复现 | `plugin/CHANGELOG.md` 与 `docs/audit/release-v0511.md` 同步 |
+| P3-3（「改前 61 条」无基线） | 补出处说明：改前的 61 条取自**当时的中间快照** —— `tests/zero-debt-test.mjs` 是本版新增文件、git 里无基线可比 | `plugin/CHANGELOG.md` 与 `docs/audit/release-v0511.md` 同步 |
+
+**验收方对「已提交态」的复验**：验收方在审计过程中发现**父会话已在其审计期间提交了发布候选**（commit `0ac57d6`，且正式版验收报告已被一并提交）⇒ 它指出「已提交的发布物本身变成新的验收对象、基线已失效」，随即对**已提交态**重做了终态复验：新基线（`4df29e1` vs `0ac57d6`）的历史段逐字节比对 + 安装自测 + 夸大用词扫描；并核出「已提交的发布说明与我审计的副本 SHA 不同（`A5C0F476…` vs `FBB06FC0…`）」，逐行确认差异**只有 2 行**且都是父会话采纳 P3-2 / P3-3 建议所加的澄清，**没有一个数字被改动**。
+
+**该轮结论的出处（必须说明白）**：验收方在最终一轮的输出里写的是「**最终态复验全部通过**」，随后正要去补最后两块证据（历史段比对日志的乱码清理、343 条的原文行）时，**运行时流中断**（`Anthropic stream ended without stop_reason`）⇒ 这一句结论**没有写回本文件正文**。父会话在此如实转述，并标明它来自该验收方任务的最终输出，而不是本文件的正文。
+
+**本文件与验收方原件的差异**：**仅多出本附录**（附录二），其余逐字未改；验收方原件在 `docs/audit/.tmp-verify-v0510/verification-v0511-release.md`（未被本附录改动）。
