@@ -92,3 +92,9 @@ transcript 里的 brief 解析、派工台账的生命周期。产出的改动�
 - 验收：verifier
 - 写入者：parent:mvs_9bdda202ae274c909a5b4352fc45a471 · 会话 mvs_9bdda202ae274c909a5b4352fc45a471 · 2026-11-12T11:53:12.261Z
 
+### 2026-11-12 · 编排机制边界判定改造：scope 语义、工具通道语义、transcript brief 解析、派工台账生命周期与名额回收 · 成员持久身份口径检查器校准（契约 S16 规则 5/6/7）与新增判据的专属断言、变异体补齐
+- 做法：判据先逐条对到契约行号再动手：补三张可枚举表（宿主配置键 / 让渡标记 / 路径豁免）与两类新特征（relative-path、concrete-file），每条新判据配一条专属断言 + 一个能被证伪的语义变异体；自查出豁免越界与缺断言两条后自补。
+- 证据：tools/member-identity-check.mjs（判据表 FEATURE_SPECS / HOST_CONFIG_KEYS / DELEGATION_MARKERS / PATH_EXEMPTIONS）；tests/member-identity-test.mjs（64 条断言，含 MI-H1~MI-H14）；tests/fixtures/member-identity-mutation-matrix.mjs（19 个变异体，MISS=0）；docs/audit/verification-v0511.md（独立验收 PASS）
+- 验收：verifier
+- 写入者：parent:mvs_9bdda202ae274c909a5b4352fc45a471 · 会话 mvs_9bdda202ae274c909a5b4352fc45a471 · 2026-11-12T16:33:07.460Z
+

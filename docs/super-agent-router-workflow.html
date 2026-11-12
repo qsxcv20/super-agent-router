@@ -81,16 +81,16 @@ td:first-child{font-weight:500;color:var(--ink);white-space:nowrap}
 <div class="wrap">
 
 <header>
-  <div class="eyebrow">Super Agent Router · v0.5.7</div>
+  <div class="eyebrow">Super Agent Router · v0.5.11</div>
   <h1>把「会话」当系统：完整工作流</h1>
-  <p class="lede">这条流水线上有 <b>4 个 Hook 事件</b>、<b>7 个 handler</b>、<b>13 个运行时脚本</b>、<b>14 套回归测试</b>。从你打下一句话开始，到成员的教训沉淀回下一次派工 —— 全程没有一个环节靠自觉。</p>
+  <p class="lede">这条流水线上有 <b>5 个 Hook 事件</b>、<b>9 个 handler</b>、<b>14 个运行时脚本</b>、<b>16 套回归测试</b>。从你打下一句话开始，到成员的教训沉淀回下一次派工 —— 全程没有一个环节靠自觉。</p>
   <div class="meta">
     <span class="chip"><b>4</b> Hook 事件</span>
-    <span class="chip"><b>7</b> handler</span>
-    <span class="chip"><b>13</b> 脚本</span>
-    <span class="chip"><b>14</b> 套测试</span>
-    <span class="chip"><b>S1–S14</b> 契约条目</span>
-    <span class="chip"><b>89</b> 条缺陷台账</span>
+    <span class="chip"><b>9</b> handler</span>
+    <span class="chip"><b>14</b> 脚本</span>
+    <span class="chip"><b>16</b> 套测试</span>
+    <span class="chip"><b>S1–S16</b> 契约条目</span>
+    <span class="chip"><b>113</b> 条缺陷台账</span>
   </div>
 </header>
 
@@ -305,7 +305,7 @@ td:first-child{font-weight:500;color:var(--ink);white-space:nowrap}
 
 <section>
   <h2><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2" fill="none"/></svg>时间线：这套东西是怎么长出来的</h2>
-  <p class="sub">从 v0.3.0 到 v0.5.7 —— 不是设计出来的，是被 89 条缺陷逼出来的。</p>
+  <p class="sub">从 v0.3.0 到 v0.5.11 —— 不是设计出来的，是被 113 条缺陷逼出来的。</p>
   <ol class="timeline">
     <li><strong>v0.3.0 · 履历机制 + 目录整理</strong><p>方法论文件写入 + 注入参考不改 owns。仓库结构定型：<code>plugin/</code> + <code>.superagent/</code> + <code>README</code>。</p></li>
     <li><strong>v0.3.1 · Hook 不触发的根因</strong><p>发现 hook 的 <code>matcher</code> 语义与激活时序有问题 —— 按官方契约补 SessionStart、省略 matcher。这一步之后机制才真正跑起来。</p></li>
@@ -315,12 +315,14 @@ td:first-child{font-weight:500;color:var(--ink);white-space:nowrap}
     <li><strong>v0.5.4–v0.5.5 · 权限等级 + 自动审核</strong><p>引入 tier（scoped / full）、越界自动记账 → 父会话一条命令批准扩权；权威面脚本改为父会话专属。</p></li>
     <li><strong>v0.5.6 · 并发与降级</strong><p>台账写入统一收口到锁内单入口（并发不再静默丢记录）；账号名单不可得时三态判定 + 降级披露。</p></li>
     <li><strong>v0.5.7 · 公开分发</strong><p>家目录展开下沉到 <code>absolutizePath()</code>；空设备不再算写目标。加一键安装/卸载脚本、GitHub Release、MIT 许可。仓库转 public。</p></li>
+    <li><strong>v0.5.8–v0.5.10 · 活体证据 + 安装幂等</strong><p>子代理陷入重复调用时当场拦下；活体拦截证据取到（兼容投影 vs 会话库）；安装器幂等判断从「版本号相等」改成「逐文件 SHA256 内容相等」。</p></li>
+    <li><strong>v0.5.11 · 零欠账 + 成员持久身份口径</strong><p>台账 103 条逐条判定、状态词表收进契约并机器校验；成员的持久身份（系统提示词与名录）只放通用能力，一次性交代进派工 brief —— 并落成机器可查的检查器。</p></li>
   </ol>
 </section>
 
 <section>
   <h2><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" fill="none"/><path d="M14 2v6h6" fill="none"/></svg>代码地图：每个文件负责什么</h2>
-  <p class="sub">13 个运行时脚本，按职责分四组。</p>
+  <p class="sub">14 个运行时脚本，按职责分四组。</p>
   <div class="card">
   <table>
     <thead><tr><th>脚本</th><th>行数量级</th><th>职责</th></tr></thead>
@@ -344,15 +346,15 @@ td:first-child{font-weight:500;color:var(--ink);white-space:nowrap}
   <div class="grid3" style="margin-top:16px">
     <div class="card">
       <h3 style="font-size:15px;font-weight:600;margin-bottom:8px">回归测试</h3>
-      <p style="font-size:14px;color:var(--ink2)"><code>tests/</code> 14 套 · <code>tools/run-tests.mjs</code> 一把跑全量（十四套 897 条断言 0 FAIL）</p>
+      <p style="font-size:14px;color:var(--ink2)"><code>tests/</code> 16 套 · <code>tools/run-tests.mjs</code> 一把跑全量（十六套 1051 条断言 0 FAIL）</p>
     </div>
     <div class="card">
       <h3 style="font-size:15px;font-weight:600;margin-bottom:8px">仓库工具</h3>
-      <p style="font-size:14px;color:var(--ink2)"><code>tools/</code> 6 个：部署插件、台账核对、GitHub 同步与逐文件校验、抽取真实 hook 载荷</p>
+      <p style="font-size:14px;color:var(--ink2)"><code>tools/</code> 8 个：部署插件、台账核对、成员身份口径核对、GitHub 同步与逐文件校验、抽取真实 hook 载荷</p>
     </div>
     <div class="card">
       <h3 style="font-size:15px;font-weight:600;margin-bottom:8px">契约</h3>
-      <p style="font-size:14px;color:var(--ink2)"><code>references/contract.md</code> S1–S14 —— 模板、编号、scope 语义、通道语义、台账口径的<strong>唯一事实源</strong></p>
+      <p style="font-size:14px;color:var(--ink2)"><code>references/contract.md</code> S1–S16 —— 模板、编号、scope 语义、通道语义、台账口径、成员持久身份口径的<strong>唯一事实源</strong></p>
     </div>
   </div>
 </section>

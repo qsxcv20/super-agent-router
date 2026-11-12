@@ -25,9 +25,11 @@
 // 那不是「没关系」，那是越界管控整段失效而不报错（D-01 / D-02 / D-04 / D-16）。
 import path from 'node:path';
 import os from 'node:os';
+import fs from 'node:fs';
 import {
   readStdin, parseInputStrict, readLedger, updateLedger, inScope,
   findBinding, upsertBinding, readBriefFromTranscript, scopeOverlaps,
+  findTaskBinding,
   workspaceRoot, resolveAgentKey, isPathToken, extractPathTokens,
   splitCommandTokens, isReadOnlyCommand, extractWriteTargets,
   isNullDeviceToken, hasAssetWriteVerb,
@@ -159,11 +161,23 @@ const READ_TOOLS = ['read', 'glob', 'grep', 'list', 'search', 'notebookread'];
 // 明确不碰工作区文件的工具：不参与文件类判定，避免兜底规则误伤。
 const NON_FILE_TOOLS = ['web_search', 'web_fetch', 'task', 'think', 'todo', 'self_reminder', 'tool_search', 'skill', 'ask_user'];
 
+// ── 后台任务三件套（D-87）────────────────────────────────────
+//
+// 这三个工具**不碰工作区文件**，但它们能读**别的成员会话**的输出。
+// 以前它们根本不在 guard 的 matcher 里 —— 宿主按**精确等值**派发，
+// 「task」不会顺带命中「task_output」⇒ 这条通道完全不受 scope 约束（D-87）。
+//
+// 判定对象不是工作区路径，而是「这个后台任务归谁」：载荷里只有 task_id ⇒
+// 靠派工台账反查（task_bindings 由 PostToolUse(task) 登记）。
+// 查不到归属 = 判不了是不是越界 ⇒ **拒绝**（不放行）。
+const TASK_SESSION_TOOLS = ['task_output', 'task_query', 'task_stop'];
+
 // 名字长得像文件类工具的未登记工具
 const FILE_TOOL_HINT = /(file|path|dir|folder|write|edit|read|notebook|copy|move|delete|remove|create|rename|upload|download|save|patch|glob|grep|search|list|tree|touch|mkdir|rmdir|shell|exec|bash|command|code|script)/i;
 
 function toolKind(toolName) {
   if (toolName === 'run_code') return 'composite';
+  if (TASK_SESSION_TOOLS.includes(toolName)) return 'task';
   if (WRITE_TOOLS.includes(toolName)) return 'write';
   if (READ_TOOLS.includes(toolName)) return 'read';
   if (NON_FILE_TOOLS.includes(toolName)) return 'none';
@@ -244,6 +258,58 @@ if (!binding) {
   // 免得每次调用都重读（也免得机制升级本身把老会话的等级打回 scoped）。
   binding.tier = dispatchTier(null, binding.agent_key || binding.agent);
   updateLedger((cur) => { upsertBinding(cur, binding); });
+}
+
+// ── 后台任务通道的归属判定（D-87）───────────────────────────
+//
+// 判定对象不是工作区路径，而是「这个后台任务是不是**别的成员**的会话」。
+// 载荷里只有 task_id，没有任何路径 ⇒ scope 目录树规则管不到它 ⇒
+// 只能靠派工台账反查（task_bindings：PostToolUse(task) 登记的「谁起了哪个任务」）。
+//
+// 三条口径（取不到归属 = 判不了越界 ⇒ 拒绝，不放行）：
+//   ① 台账里有绑定、归属成员 == 本成员        ⇒ 放行（读自己的任务）
+//   ② 台账里有绑定、归属成员 != 本成员        ⇒ 拒绝（读别人的交付 = 破坏成员隔离）
+//   ③ 台账里查不到这个 task_id                ⇒ 拒绝（归属算不出来）
+//
+// ③ 的兜底：本会话自己的 transcript 里出现过这个 task_id ⇒ 大概率是自己起的任务
+// （PostToolUse 没派发到子会话时会出现这种情况）⇒ 放行。
+// 这条兜底只认「**自己会话的 transcript**」，不认任何外部文件。
+if (kind === 'task') {
+  const taskId = String(tInput.task_id || tInput.taskId || '').trim();
+  const myKey = String((binding && (binding.agent_key || binding.agent)) || agentType || '');
+  if (!taskId) {
+    // task_query 不带 task_id 时是「列**本会话**的后台任务」——
+    // 宿主的工具契约就是这么定义的（app.asar：@mavis/agent-tools/dist/cloud/
+    // cloud-task-control.js 头部注释「task_query — list this session's background
+    // tasks, or get one by id」）⇒ 没有跨会话目标，不构成越界读取。
+    if (tool === 'task_query') {
+      allow(injected);
+      process.exit(0);
+    }
+    deny('[super-agent-router] 越界管控无法执行：' + tool + ' 没有可判定的 task_id。' +
+      '取不到目标就放行 = 这次调用完全绕过了归属判定，故拒绝。');
+  }
+  const owner = findTaskBinding(ledger, taskId);
+  const ownerKey = String((owner && (owner.agent_key || owner.agent)) || '');
+  if (owner && ownerKey && myKey && ownerKey === myKey) {
+    allow(injected);
+    process.exit(0);
+  }
+  if (!owner) {
+    // 兜底：自己会话的 transcript 里出现过这个 task_id ⇒ 自己起的任务。
+    if (transcriptMentionsTask(String(input.transcript_path || ''), taskId)) {
+      allow(injected);
+      process.exit(0);
+    }
+    deny('[super-agent-router] 越界拦截：后台任务 ' + taskId + ' 的**归属查不到**。' +
+      '派工台账里没有它的登记记录 ⇒ 无法确认它是不是**别的成员**的会话，' +
+      '按「取不到归属即拒绝」处理（放行等于把跨成员读取这条洞留着）。' +
+      '若这是你自己起的任务，请让父会话确认机制已登记该任务（派工台账的 task_bindings）。');
+  }
+  deny('[super-agent-router] 越界拦截：后台任务 ' + taskId + ' 属于**另一个成员**（' +
+    (ownerKey || '未知归属') + '），不是本成员（' + (myKey || '未知') + '）的会话。' +
+    '读别人的后台任务输出 = 绕过「成员记忆共享但隔离」这条纪律（D-87）。' +
+    '请让父会话把需要的内容转写进 brief，或让父会话自己读。');
 }
 
 // 私有记忆目录不得出现在 worker 的边界里（闸门 1c 的第二道防线）。
@@ -594,6 +660,32 @@ function outOfScopeVerdict(outside, mode) {
     approvable,
     hint
   };
+}
+
+// 本会话的 transcript 里有没有出现过这个 task_id。
+//
+// 用途只有一个：D-87 的「归属查不到」兜底 —— 台账里没有登记时，
+// 如果这个 task_id 出现在**自己会话**的 transcript 里，它大概率是自己起的任务
+// （PostToolUse 没派发到子会话时会缺登记）。
+//
+// 只读自己会话的那份文件、只读尾部 1MB —— 不扫任何外部路径。
+function transcriptMentionsTask(transcriptPath, taskId) {
+  const p = String(transcriptPath || '');
+  const key = String(taskId || '');
+  if (!p || !key) return false;
+  let fd = -1;
+  try {
+    fd = fs.openSync(p, 'r');
+    const size = fs.fstatSync(fd).size;
+    const take = Math.min(size, 1024 * 1024);
+    const buf = Buffer.alloc(take);
+    fs.readSync(fd, buf, 0, take, Math.max(0, size - take));
+    return buf.toString('utf8').indexOf(key) >= 0;
+  } catch {
+    return false;
+  } finally {
+    if (fd >= 0) { try { fs.closeSync(fd); } catch { /* 读失败不影响判定 */ } }
+  }
 }
 
 // ── 取目标 ────────────────────────────────────────────

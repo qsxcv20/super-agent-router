@@ -1314,6 +1314,25 @@ export function withinWorkspace(target) {
 export function countsAgainstSlots(d) {
   return !(d && d.degraded === true);
 }
+
+// ── 名额组（D-89）─────────────────────────────────────────
+//
+// 一条派工占的是「**名额组**」，不是它自己那条记录。
+//
+// 为什么要有组：追加轮（task_append）是**同一份工作的下一轮**，不是新的一份工作。
+// 以前原派工被 Subagent_stop 标成 done 之后，名额就还回去了 ——
+// 而追加轮这时还在跑 ⇒ 父会话能再派一轮同名成员，两边同时在飞、互相踩同一片 scope，
+// 而闸门看不见（D-89 的「名额提前释放」）。
+//
+// 口径：追加轮继承原派工的 slot_group ⇒ 同组只算**一个**名额 ⇒
+//   · 追加轮**不重复占**名额（不把并发上限凭空抬高）；
+//   · 追加轮在飞时，原派工那个名额**不释放**（组里还有活的记录）。
+//
+// 默认口径是「一条记录一个组」（slot_group 缺省即用 dispatch_id）——
+// 反过来写（默认全算同组）会让所有派工挤成一个名额，并发上限当场失效。
+export function slotGroupOf(d) {
+  return String((d && (d.slot_group || d.dispatch_id)) || '');
+}
 // TTL 兜底（S6.2 第 2 条 / S6.4）：超过 TTL 还停在 active 的记录判死。
 // 以前只有 TTL 过滤，state 永远停在 active —— 台账状态与真实情况失步（D-10）。
 export function markDispatchAborted(ledger, dispatchId, reason) {
@@ -1341,12 +1360,20 @@ export function reapExpiredDispatches(ledger, now = Date.now()) {
 export function activeDispatches(ledger, parentSessionId, now = Date.now()) {
   reapExpiredDispatches(ledger, now);
   const key = String(parentSessionId || '');
-  return (ledger.dispatches || []).filter((d) => {
-    if (String(d.parent_session_id || '') !== key) return false;
-    if ((d.state || 'active') !== 'active') return false;
-    if (!countsAgainstSlots(d)) return false;
-    return now - (d.at || 0) < DISPATCH_TTL_MS;
-  });
+  const out = [];
+  const seenGroups = new Set();
+  for (const d of (ledger.dispatches || [])) {
+    if (String(d.parent_session_id || '') !== key) continue;
+    if ((d.state || 'active') !== 'active') continue;
+    if (!countsAgainstSlots(d)) continue;
+    if (now - (d.at || 0) >= DISPATCH_TTL_MS) continue;
+    // 同组只算一个名额（D-89）：追加轮与原派工是同一份工作。
+    const g = slotGroupOf(d);
+    if (seenGroups.has(g)) continue;
+    seenGroups.add(g);
+    out.push(d);
+  }
+  return out;
 }
 
 // 项目维度的在飞名单（D-09）：写冲突检测要比全项目，
@@ -1354,17 +1381,25 @@ export function activeDispatches(ledger, parentSessionId, now = Date.now()) {
 export function activeDispatchesAll(ledger, now = Date.now(), project = null) {
   reapExpiredDispatches(ledger, now);
   const p = project ? String(project).toLowerCase() : '';
-  return (ledger.dispatches || []).filter((d) => {
-    if ((d.state || 'active') !== 'active') return false;
-    if (now - (d.at || 0) >= DISPATCH_TTL_MS) return false;
+  const out = [];
+  const seenGroups = new Set();
+  for (const d of (ledger.dispatches || [])) {
+    if ((d.state || 'active') !== 'active') continue;
+    if (now - (d.at || 0) >= DISPATCH_TTL_MS) continue;
     // 降级记录（D-73）不参与 SCOPE 冲突判定 —— 见 countsAgainstSlots 的注释。
-    if (!countsAgainstSlots(d)) return false;
+    if (!countsAgainstSlots(d)) continue;
     if (p && d.project) {
       // 记录所属项目不同 -> 不是同一个工作区的并发写
-      if (String(d.project).toLowerCase() !== p) return false;
+      if (String(d.project).toLowerCase() !== p) continue;
     }
-    return true;
-  });
+    // 同组只算一个名额（D-89）：追加轮与原派工是同一份工作，
+    // 否则它们会互相「组队冲突」（自己跟自己撞）。
+    const g = slotGroupOf(d);
+    if (seenGroups.has(g)) continue;
+    seenGroups.add(g);
+    out.push(d);
+  }
+  return out;
 }
 
 export function totalDispatches(ledger, parentSessionId) {
@@ -1678,6 +1713,47 @@ export function upsertBinding(ledger, binding) {
   ledger.bindings.push(binding);
   ledger.bindings = ledger.bindings.slice(-200);
   return binding;
+}
+
+// ── 后台任务归属（D-87 / D-89）────────────────────────────
+//
+// 宿主把 task 工具调用的**回执**放在 PostToolUse 的 tool_response 里，
+// 里面有宿主分配的 task_id（本地实测：details.task_id，形如 bg_xxx）。
+// 只有把它记进台账，下面两件事才有判据：
+//
+//   ① task_output / task_query / task_stop 的**归属判定**（D-87）：
+//      载荷里只有 task_id，scope 目录树规则管不到它 ——
+//      「这个后台任务是不是别的成员的会话」只能靠台账反查。
+//   ② task_append 的**身份来源**（D-89）：
+//      追加载荷只有 task_id + content，**没有任何 agent 身份**（schema 级确认），
+//      身份只能从台账反查原派工。
+//
+// 取不到归属时一律拒绝（不放行）：归属算不出来 = 判不了是不是越界。
+export function findTaskBinding(ledger, taskId) {
+  const key = String(taskId || '');
+  if (!key) return null;
+  return (ledger.task_bindings || []).find((b) => String(b.task_id || '') === key) || null;
+}
+
+export function upsertTaskBinding(ledger, binding) {
+  const key = String((binding && binding.task_id) || '');
+  if (!key) return null;
+  ledger.task_bindings = (ledger.task_bindings || []).filter((b) => String(b.task_id || '') !== key);
+  ledger.task_bindings.push(binding);
+  // 绑定表只保留最近 200 条：它是「谁起了哪个后台任务」的索引，不是审计账。
+  ledger.task_bindings = ledger.task_bindings.slice(-200);
+  return binding;
+}
+
+// 按 task_id 反查**派工条目**（追加轮的 agent/scope 从这里继承）。
+// 查不到就是查不到 —— 调用方必须据此拒绝，不许默认「当成自己的」。
+export function findDispatchByTaskId(ledger, taskId) {
+  const key = String(taskId || '');
+  if (!key) return null;
+  const b = findTaskBinding(ledger, key);
+  const dispatchId = String((b && b.dispatch_id) || '');
+  if (!dispatchId) return null;
+  return (ledger.dispatches || []).find((d) => String(d.dispatch_id || '') === dispatchId) || null;
 }
 
 // ── 成员命名（D-12）────────────────────────────────────

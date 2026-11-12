@@ -15,6 +15,7 @@ import {
   bumpDispatchCounter, scopeClash, workspaceRoot, projectRoot,
   MAX_ACTIVE_DISPATCHES, MAX_TOTAL_DISPATCHES,
   resolveAgentKey, extractBriefMarkers, reapExpiredDispatches, normScopeEntry,
+  readLedger, slotGroupOf, findTaskBinding, upsertTaskBinding, findDispatchByTaskId,
   touchesSuperagentPath, memberTier, TIER_FULL, TIER_SCOPED,
   isPrivateMemoryEntry, PRIVATE_MEMORY_DIRS,
   accountMemberNames, accountMemberExists, rosterMemberNames, staleRosterMembers,
@@ -39,7 +40,64 @@ if (!parsed.ok) {
 }
 const input = parsed.value;
 const tool = String(input.tool_name || '');
-if (tool.toLowerCase() !== 'task') process.exit(0);
+const hookEvent = String(input.hook_event_name || '');
+
+// ── PostToolUse(task)：登记「谁起了哪个后台任务」────────────────────
+//
+// 为什么必须有这一段：D-87 与 D-89 的判定对象都是 **task_id**，
+// 而 task_id 是宿主在 task 工具的**回执**里分配的 ——
+// PreToolUse 的载荷里根本没有它（那时候任务还没起来）。
+// 宿主把回执放在 PostToolUse 的 tool_response 里（本地实测：
+// details.task_id 形如 bg_xxx，另有 details.sub_session_id = 子会话 id）。
+//
+// 登记之后两件事才有判据：
+//   · guard 判 task_output / task_query / task_stop 的**归属**（D-87）
+//   · dispatch 判 task_append 的**身份与 SCOPE 继承**（D-89）
+//
+// 解析不出 task_id 时**不猜**：什么都不登记 ——
+// 后续判定会因为「归属查不到」而拒绝（fail-closed），而不是默认放行。
+if (hookEvent === 'PostToolUse') {
+  if (tool.toLowerCase() === 'task') {
+    const resp = input.tool_response || {};
+    const details = (resp && resp.details) || {};
+    const taskId = String(details.task_id || resp.task_id || taskIdFromText(resp)).trim();
+    if (taskId) {
+      const toolUseId = String(input.tool_use_id || '');
+      const subSessionId = String(details.sub_session_id || resp.sub_session_id || '');
+      const agentKey = resolveAgentKey({
+        agentType: input.agent_type,
+        toolAgentName: details.agent_name
+      });
+      const res = updateLedger((cur) => {
+        // 同一 tool_use_id 的派工条目 = 这次 task 调用的派工（PreToolUse 登记时写的）。
+        const d = toolUseId
+          ? (cur.dispatches || []).find((x) => String(x.tool_use_id || '') === toolUseId)
+          : null;
+        // 子会话 id 记到派工条目上：追加轮要靠它把「回收谁」指向追加条目（D-89）。
+        if (d && subSessionId && !d.sub_session_id) d.sub_session_id = subSessionId;
+        upsertTaskBinding(cur, {
+          task_id: taskId,
+          dispatch_id: d ? String(d.dispatch_id || '') : '',
+          agent_key: d ? String(d.agent_key || d.agent || '') : agentKey,
+          agent: d ? String(d.agent || '') : String(details.agent_name || ''),
+          session_id: String(input.session_id || ''),
+          sub_session_id: subSessionId,
+          at: Date.now()
+        });
+      });
+      if (!res.ok) {
+        process.stderr.write('[super-agent-router] 后台任务归属登记失败：' + (res.error || '') +
+          '（' + (res.code || '') + '）\n');
+      }
+    }
+  }
+  process.exit(0);
+}
+
+if (tool.toLowerCase() !== 'task' && tool.toLowerCase() !== 'task_append') process.exit(0);
+
+// 追加轮走**另一条**登记路径（继承原派工，不重复走闸门 1 的 SCOPE 必填）。
+if (tool.toLowerCase() === 'task_append') handleAppendRound();
 
 const tInput = input.tool_input || {};
 const prompt = String(tInput.prompt || '');
@@ -59,6 +117,160 @@ function deny(reason) {
       hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
       permissionDecisionReason: reason
+    }
+  }));
+  process.exit(0);
+}
+
+// 从 task 工具的回执正文里抠出 task_id（宿主放在 attributes 里，也放在 details 里）。
+function taskIdFromText(resp) {
+  const text = String((resp && (resp.text || (resp.content && resp.content[0] && resp.content[0].text))) || '');
+  const m = text.match(/task_id\s*=\s*"([^"]+)"/);
+  return m ? m[1] : '';
+}
+
+// ── 追加轮（task_append）的登记（D-89）────────────────────────
+//
+// 追加轮 = 把工作**追加**到已有子会话（契约 S4.5 要求的默认复用方式）。
+// 以前它**在派工台账里一条不记**，带来三件事：
+//   ① 追加轮的 scope 没有留痕；
+//   ② 冲突检测对追加轮失明；
+//   ③ **名额提前释放** —— 原派工被 Subagent_stop 标成 done 之后名额就还回去了，
+//      而追加轮这时还在跑 ⇒ 父会话能再派一轮同名成员，两边同时在飞、互相踩同一片 scope。
+//
+// 为什么不能只改 matcher：追加载荷**只有 task_id 与正文**（宿主 schema 级确认：
+// LocalTaskAppendToolDef 的入参只有 task_id 与 content），**没有任何 agent 身份** ⇒
+// 身份与 scope 只能从派工台账反查（task_bindings → 原派工条目）。
+// 反查不到 ⇒ 判不出边界 ⇒ 拒绝（不放行）。
+function handleAppendRound() {
+  const tInput = input.tool_input || {};
+  const appendTaskId = String(tInput.task_id || tInput.taskId || '').trim();
+  const content = String(tInput.content || '');
+  const now = Date.now();
+  // 这两个值从载荷里现取（不引用模块级的 const）：本函数在那些 const 之前就被调用，
+  // 引用它们会撞上暂时性死区（Cannot access 'tid' before initialization）。
+  const appendTurnId = String(input.turn_id || '');
+  const appendToolUseId = String(input.tool_use_id || '');
+
+  if (!appendTaskId) {
+    deny('[super-agent-router] 追加轮无法登记：载荷里没有 task_id。' +
+      '追加轮的边界只能从派工台账反查（载荷里没有 agent 身份），取不到就拒绝 —— ' +
+      '「取不到即放行」会让追加轮完全不受越界管控。');
+  }
+
+  const ledger0 = readLedger();
+  if (ledger0.readable === false) {
+    deny('[super-agent-router] 追加轮无法登记：派工台账不可用（' + (ledger0.error || '未知原因') + '）。' +
+      '台账读不出来就反查不到原派工，追加轮的边界无从确定，此处不放行。');
+  }
+  const owner = findDispatchByTaskId(ledger0, appendTaskId);
+  if (!owner) {
+    deny('[super-agent-router] 追加轮无法登记：派工台账里查不到 task_id=' + appendTaskId + ' 对应的派工条目。' +
+      '追加载荷只有 task_id 与正文、**没有任何 agent 身份** ⇒ 成员与 scope 只能靠台账反查；' +
+      '查不到就是判不出边界，此处不放行。' +
+      '（若该任务是机制升级前登记的，请让父会话重新派一轮，而不是追加到它上面。）');
+  }
+
+  const ownerScope = Array.isArray(owner.scope) ? owner.scope : [];
+  const declared = extractScopeDetail(content);
+  const scopeMismatch = declared.entries.length > 0 &&
+    declared.entries.join('|') !== ownerScope.join('|');
+
+  const reg = updateLedger((cur) => {
+    if (cur.readable === false) {
+      return { deny: '[super-agent-router] 追加轮登记失败：派工台账不可用（' + (cur.error || '') + '）。' +
+        '台账写不进去 = 追加轮的在飞记录不可见，此处不放行。' };
+    }
+    reapExpiredDispatches(cur, now);
+
+    // 组队冲突：追加轮的 scope **继承**原派工 ⇒ 同组不算冲突（自己跟自己撞）。
+    const group = slotGroupOf(owner);
+    const activeAll = activeDispatchesAll(cur, now, workspaceRoot());
+    for (const d of activeAll) {
+      if (slotGroupOf(d) === group) continue;
+      const clash = scopeClash(d.scope, ownerScope);
+      if (clash.length) {
+        return { deny: '[super-agent-router] 组队冲突：追加轮的 SCOPE（继承自派工 ' + owner.dispatch_id +
+          '）与仍在飞的 ' + (d.agent_key || d.agent) + ' 派工重叠（冲突路径：' + clash.slice(0, 5).join(', ') + '）。' +
+          '两个 worker 同时写同一处会互相覆盖，验收也无从判断谁的改动生效。' +
+          '要么等它结束再追加，要么把范围拆开重写 SCOPE。' };
+      }
+    }
+
+    // 名额：追加轮与原派工**共用一个名额组** ⇒ 这里既不新增名额，也不释放原派工的名额。
+    const active = activeDispatches(cur, owner.parent_session_id, now);
+    if (active.length >= MAX_ACTIVE_DISPATCHES) {
+      return { deny: '[super-agent-router] 派工超限：本会话同时在飞的派工已达 ' + active.length +
+        ' 个（上限 ' + MAX_ACTIVE_DISPATCHES + '）。追加轮与原派工共用一个名额，' +
+        '但别的派工已经占满了 —— 先收拢已完成的任务。' };
+    }
+
+    const appendId = 'dsp_' + now.toString(36) + '_ap_' + Math.random().toString(36).slice(2, 8);
+    // 子会话 id：优先取原派工条目上的，其次取任务绑定上的
+    // （原派工可能是机制升级前登记的，那时条目上没有这个字段）。
+    const tb = findTaskBinding(cur, appendTaskId);
+    const subSessionId = String(owner.sub_session_id || (tb && tb.sub_session_id) || '');
+    cur.dispatches.push({
+      dispatch_id: appendId,
+      parent_session_id: owner.parent_session_id,
+      turn_id: appendTurnId,
+      turn_key: appendTurnId || appendToolUseId,
+      tool_use_id: appendToolUseId,
+      agent: owner.agent,
+      agent_key: owner.agent_key,
+      project: owner.project,
+      scope: ownerScope,
+      lessons: owner.lessons,
+      lesson_count: owner.lesson_count,
+      tier: owner.tier,
+      member_existence: owner.member_existence,
+      degraded: owner.degraded,
+      state: 'active',
+      at: now,
+      // 追加轮专用字段：
+      //   append_of  —— 它续的是哪一轮
+      //   slot_group —— 与原派工共用名额组（不重复占名额、不提前释放）
+      //   task_id    —— 这次追加指向的后台任务
+      append_of: owner.dispatch_id,
+      slot_group: group,
+      task_id: appendTaskId,
+      sub_session_id: subSessionId
+    });
+    // 任务绑定改指追加条目 —— 之后 task_output 查到的就是「当前在飞的那一轮」。
+    if (tb) tb.dispatch_id = appendId;
+    // 子会话绑定改指追加条目 —— 否则 SubagentStop 回收的是**已结束**的原派工，
+    // 追加轮会一直挂到 TTL 才被回收（名额泄漏）。
+    if (subSessionId) {
+      const bind = (cur.bindings || []).find((x) => String(x.session_id || '') === subSessionId);
+      if (bind) bind.dispatch_id = appendId;
+    }
+    // 追加轮**不 bump 累计计数器**：它是同一份工作的下一轮，不是新的一份工作。
+    return { result: { appendId } };
+  });
+
+  if (!reg.ok) {
+    deny('[super-agent-router] 追加轮登记失败：' + (reg.error || '台账写入失败') + '（' + (reg.code || '') + '）。' +
+      '台账写不进去 = 追加轮的在飞记录不可见、冲突与名额判定失真，此处不放行。');
+  }
+  if (reg.deny) deny(reg.deny);
+
+  const blocks = [];
+  blocks.push('[super-agent-router] 追加轮已登记：' + reg.result.appendId +
+    '（继承原派工 ' + owner.dispatch_id + ' 的成员与 SCOPE；与原派工**共用一个名额**，不重复占位、也不提前释放）。');
+  if (scopeMismatch) {
+    blocks.push('[super-agent-router] 追加正文里声明的 SCOPE（' + declared.entries.join(', ') +
+      '）与原派工的 SCOPE（' + ownerScope.join(', ') + '）**不一致**。' +
+      '按契约 S4.5，追加**不会自动扩大边界** —— 本轮仍以原派工的 SCOPE 为准。' +
+      '要加路径请走管理员扩权（scope-amend.mjs --dispatch ' + reg.result.appendId + ' --add <路径>）；' +
+      '这条追加条目在飞 ⇒ 预授权通道可用。');
+  }
+  blocks.push('[super-agent-router] 追加轮的预授权入口：scope-amend.mjs --dispatch ' + reg.result.appendId +
+    ' --add <路径> --approver ' + String(input.session_id || '') +
+    '（该条目在飞 ⇒ 批准有效；原派工条目已结束，对它扩权会被拒 —— 事后再补权限没有意义）。');
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      additionalContext: blocks.join('\n\n')
     }
   }));
   process.exit(0);

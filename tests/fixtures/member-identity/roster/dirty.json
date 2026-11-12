@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "updated": "2026-11-12",
+  "note": "夹具：名录里混入一次性任务内容（created_for 写了任务原文，accepts 写了「本次任务」）",
+  "members": [
+    {
+      "name": "sa-aigc-text",
+      "kind": "specialist",
+      "owns": "文本侧产出与评分",
+      "accepts": "需要做本次任务的实验二产出",
+      "reject": "不做图像与音视频",
+      "method": ".superagent/methods/sa-aigc-text.md",
+      "source": "runtime",
+      "created_for": "首次触发场景：《人工智能导论》实验一/二/四的文案与核查（任务书在 Q:\\教学\\人工智能导论\\任务书\\）",
+      "created_at": "2026-11-12T00:00:00.000Z"
+    }
+  ]
+}

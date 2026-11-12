@@ -86,4 +86,3 @@
 - 证据：install.ps1 第 6 节 :331-360；tools/install-selftest/install-idempotency-test.ps1（24 条断言，退回版本号口径的变异体必红）+ run-all.ps1（7 套件 / 331 条 / 0 FAIL）；plugin/CHANGELOG.md 的 0.5.10 段；docs/audit/release-v0510.md、docs/audit/verification-v0510.md（VERDICT PASS_WITH_CONDITIONS）；GitHub Release v0.5.10（tag c3586a70d7，资产 1,722,102 B，185/185 blob sha 一致）
 - 验收：verifier
 - 写入者：parent:mvs_9bdda202ae274c909a5b4352fc45a471 · 会话 mvs_9bdda202ae274c909a5b4352fc45a471 · 2026-11-12T11:53:12.780Z
-

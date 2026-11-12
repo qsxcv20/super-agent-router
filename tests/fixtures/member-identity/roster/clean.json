@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "updated": "2026-11-12",
+  "note": "夹具：项目级名录的干净形态（能力化表述，不含任何一次性任务内容）",
+  "members": [
+    {
+      "name": "explore",
+      "kind": "builtin",
+      "source": "builtin",
+      "owns": "只读定位：找代码、找文件、摸清现状",
+      "accepts": "需要先摸清现状再决定怎么做",
+      "reject": "不写文件、不给超出定位范围的结论",
+      "method": null
+    },
+    {
+      "name": "sa-image-design",
+      "kind": "specialist",
+      "owns": "图像设计专项：视觉方案、版式与出图前的口径回显",
+      "accepts": "需要出视觉方案，或需要把出图口径回显清楚",
+      "reject": "不做图像生成与模型训练，不替 Router 决定授权边界",
+      "method": ".superagent/methods/sa-image-design.md",
+      "source": "runtime",
+      "created_for": "首次触发场景：图像设计专项产出与出图口径回显",
+      "created_at": "2026-11-12T00:00:00.000Z"
+    },
+    {
+      "name": "sa-aigc-text",
+      "kind": "specialist",
+      "owns": "文本侧产出与评分：文案、核查表与评分口径",
+      "accepts": "需要产出文本并给出可复核的评分口径",
+      "reject": "不做图像与音视频",
+      "method": ".superagent/methods/sa-aigc-text.md",
+      "source": "runtime",
+      "created_for": "首次触发场景：文本侧产出与评分口径的建立",
+      "created_at": "2026-11-12T00:00:00.000Z"
+    }
+  ]
+}

@@ -1,9 +1,9 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    super-agent-router 安装 / 卸载脚本自测 —— 一条命令复跑全部套件（9 条断言）。
+    super-agent-router 安装 / 卸载脚本自测 —— 一条命令复跑全部套件（10 条断言）。
 
-    机器标记：ASSERTION-COUNT: 9
+    机器标记：ASSERTION-COUNT: 10
 
 .DESCRIPTION
     **仅 Windows**：依赖 powershell 命令与 PowerShell 5.1。
@@ -19,6 +19,7 @@
       trailing-space-test.mjs       尾随空格路径身份 —— F1 的钉子
       verify-seed.mjs               播种与安装副本的 node 侧校验
       check-readme-consistency.mjs  文档与实现逐字对账（含 F2 / F3 / F6 / V3 / V4 / X1 的钉子）
+      check-version-consistency.mjs 版本字面量与目录结构数字对账（D-94 的钉子：版本号与 handler/脚本数对不上即红）
       run-all-exit-code-test.mjs    自检红 ⇒ 退出码与横幅不许说谎（X1 的钉子）
 
     **条数防漂（V4）**：跑完逐个核对「该套件头部声明的条数 == 它实际输出的 PASS+FAIL 条数」，
@@ -55,6 +56,7 @@ $suites = @(
     @{ name = 'trailing-space-test.mjs'; kind = 'node'; desc = '尾随空格路径身份（F1 钉子）' },
     @{ name = 'verify-seed.mjs'; kind = 'node'; desc = '播种与安装副本（node 侧）' },
     @{ name = 'check-readme-consistency.mjs'; kind = 'node'; desc = '文档与实现逐字对账' },
+    @{ name = 'check-version-consistency.mjs'; kind = 'node'; desc = '版本字面量与目录结构数字对账（D-94 钉子）' },
     @{ name = 'run-all-exit-code-test.mjs'; kind = 'node'; desc = '自检红 ⇒ 退出码与横幅不许说谎（X1）' }
 )
 

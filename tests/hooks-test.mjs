@@ -192,13 +192,44 @@ ok('普通提问仍静默放行（无可用专项成员的工作区）', (g.stdo
     typeof lh.command === 'string' && /loop-gate\.mjs/.test(lh.command) &&
     typeof lh.commandWindows === 'string' && /loop-gate\.mjs/.test(lh.commandWindows),
     'command=' + String(lh.command || '') + ' win=' + String(lh.commandWindows || ''));
+  // D-89：dispatch 组的 matcher 必须**逐个列出** task 与 task_append ——
+  // 宿主对 MINIMAX 格式走**精确等值**匹配（alternatives.includes），
+  // 「task」不会顺带命中「task_append」⇒ 漏了它，追加轮在派工台账里一条不记。
+  // 相对顺序不变这条断言同步更新为「dispatch 组含 task 与 task_append」。
   ok('D-86 既有 PreToolUse group 的相对顺序未变',
     groups.length >= 5 &&
-    groups[0].matcher === 'task' &&
+    splitMatcher(groups[0].matcher).includes('task') &&
+    splitMatcher(groups[0].matcher).includes('task_append') &&
     /write\|edit/.test(groups[1].matcher || '') &&
     /read\|glob/.test(groups[2].matcher || '') &&
     /mavis_agent_delete/.test(groups[3].matcher || ''),
     groups.map((g) => g.matcher).join(' || '));
+}
+
+// ── D-87 / D-89：后台任务通道必须进 matcher（精确等值，逐个列名）────────────
+//
+// 宿主的 matcher 判定走**精确等值**（alternatives.includes(value)），
+// 不是子串匹配 ⇒ 三个后台任务工具名必须**逐个**列进读类 matcher，
+// 否则护栏根本不会被派发到这条通道（D-87 的根因）。
+//
+// task_append 与 task 是**两个独立工具名** ⇒ dispatch 组也必须逐个列出（D-89）。
+{
+  const groups = h.PreToolUse || [];
+  const splitM = (m) => String(m || '').split(/[|,]/).map((s) => s.trim()).filter(Boolean);
+  const readGroup = groups.find((g) => g.matcher && /read\|glob/.test(g.matcher)) || {};
+  const rm = splitM(readGroup.matcher);
+  ok('D-87 guard 读类 matcher 精确包含 task_output', rm.includes('task_output'), 'matcher=' + (readGroup.matcher || ''));
+  ok('D-87 guard 读类 matcher 精确包含 task_query', rm.includes('task_query'), 'matcher=' + (readGroup.matcher || ''));
+  ok('D-87 guard 读类 matcher 精确包含 task_stop', rm.includes('task_stop'), 'matcher=' + (readGroup.matcher || ''));
+  const dispatchGroup = groups.find((g) => g.matcher && splitM(g.matcher).includes('task')) || {};
+  const dm = splitM(dispatchGroup.matcher);
+  ok('D-89 dispatch 组 matcher 精确包含 task_append', dm.includes('task_append'), 'matcher=' + (dispatchGroup.matcher || ''));
+  const post = (h.PostToolUse || [])[0] || {};
+  const ph = (post.hooks || [])[0] || {};
+  ok('D-89 PostToolUse 组已注册且 matcher 为 task（登记 task_id 归属）',
+    splitM(post.matcher).length === 1 && splitM(post.matcher)[0] === 'task' &&
+    /dispatch\.mjs/.test(String(ph.command || '')) && /dispatch\.mjs/.test(String(ph.commandWindows || '')),
+    'matcher=' + String(post.matcher || '') + ' cmd=' + String(ph.command || ''));
 }
 
 console.log(fail === 0 ? '>>> HOOKS ALL PASS' : '>>> HOOKS FAILURES: ' + fail);
