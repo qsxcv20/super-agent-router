@@ -1,6 +1,6 @@
 // super-agent-router 安装 / 卸载脚本自测 —— 文档与实现逐字对账
 //
-// 断言条数（131 条断言）—— 机器标记：ASSERTION-COUNT: 131
+// 断言条数（144 条断言）—— 机器标记：ASSERTION-COUNT: 144
 //
 // 防的是「文档写的参数 / 说法，脚本不支持或与实现相反」这一类洞
 // （上一轮 F-08 与本轮 F2 / F3 / F6，以及 V2 / V3 / V4 都是这一类）。
@@ -45,8 +45,8 @@ const installParams = paramsOf(install);
 const uninstallParams = paramsOf(uninstall);
 console.log('install.ps1  参数: ' + installParams.join(', '));
 console.log('uninstall.ps1 参数: ' + uninstallParams.join(', '));
-check('install.ps1 参数集为 Target/Project/VerifyOnly',
-  ['Target', 'Project', 'VerifyOnly'].every(x => installParams.includes(x)) && installParams.length === 3,
+check('install.ps1 参数集为 Target/Project/VerifyOnly/Force',
+  ['Target', 'Project', 'VerifyOnly', 'Force'].every(x => installParams.includes(x)) && installParams.length === 4,
   installParams.join(','));
 check('uninstall.ps1 参数集为 Target/Purge/PurgeData',
   ['Target', 'Purge', 'PurgeData'].every(x => uninstallParams.includes(x)) && uninstallParams.length === 3,
@@ -178,8 +178,8 @@ check('README 写明结构自检挡不住「作用到了别的目录」',
 
 // ── V4：条数声明防漂（机器标记 ↔ 头部人类可读文本 ↔ README 表格）──
 const SELFTEST_DIR = path.join(ROOT, 'tools', 'install-selftest');
-const SUITE_FILES = ['sandbox-test.ps1', 'sandbox-test2.ps1', 'trailing-space-test.mjs',
-  'verify-seed.mjs', 'check-readme-consistency.mjs', 'run-all-exit-code-test.mjs'];
+const SUITE_FILES = ['sandbox-test.ps1', 'sandbox-test2.ps1', 'install-idempotency-test.ps1',
+  'trailing-space-test.mjs', 'verify-seed.mjs', 'check-readme-consistency.mjs', 'run-all-exit-code-test.mjs'];
 for (const f of SUITE_FILES) {
   const src = fs.readFileSync(path.join(SELFTEST_DIR, f), 'utf8');
   const marks = [...src.matchAll(/ASSERTION-COUNT:\s*(\d+)/g)].map(m => m[1]);
@@ -298,6 +298,26 @@ check('存在行为级的永久断言套件 run-all-exit-code-test.mjs（X1）',
   x1Src !== '' && x1Src.includes('reintroduceCollision'), 'missing');
 check('该永久断言含「撞名改回去」的变异对照 —— 能证伪（X1）',
   x1Src.includes('$failed = 0') && x1Src.includes('撞名'), 'missing');
+
+// ── D-99：幂等判定必须按**内容**，不能只按版本号 ─────────────────────
+//   修之前 install.ps1 的幂等判断只比版本号 ⇒ 同一版本内改了代码再跑安装，
+//   它报「已是最新 —— 不重装」且一个字节都不写 ⇒「改代码 → 重装 → 重启」这条修复路径静默无效。
+//   这里把「实现口径」与「README 口径」一起钉住：文档与实现必须同说。
+check('install.ps1 的幂等判定按内容比对（复用 Get-FileMap / Compare-FileMaps）',
+  install.includes('Get-FileMap $DestDir') && install.includes('Compare-FileMaps $srcMap $destMap'), 'missing');
+check('install.ps1 不再用「版本号相同就跳过」的旧判定',
+  !install.includes('$destExists -and $installedVersion -eq $srcVersion'), '旧判定还在');
+check('install.ps1 支持 -Force 强制重装',
+  installParams.includes('Force') && /\[switch\]\s*\$Force/.test(install), 'missing');
+check('install.ps1 的 -Force 分支输出说明了「强制重装」',
+  install.includes('强制重装'), 'missing');
+check('install.ps1 对「同版本但内容不同」有明确文案',
+  install.includes('同版本但内容不同'), 'missing');
+check('install.ps1 头部 .DESCRIPTION 写明幂等判定按内容（D-99）',
+  install.includes('幂等安装（判定依据是**内容**，不是版本号'), 'missing');
+check('README 写明 -Force 强制重装', readme.includes('-Force'), 'missing');
+check('README 写明幂等判定按内容而不是版本号（同版本但内容不同 ⇒ 会重装）',
+  readme.includes('内容一致') && readme.includes('同版本但内容不同'), 'missing');
 
 // ── 自测目录自身的存在性与命名 ────────────────────────────────────
 check('自测套件目录存在', fs.existsSync(path.join(ROOT, 'tools', 'install-selftest')), 'missing');

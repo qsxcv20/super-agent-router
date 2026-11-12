@@ -1,9 +1,9 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    super-agent-router 安装 / 卸载脚本自测 —— 一条命令复跑全部套件（8 条断言）。
+    super-agent-router 安装 / 卸载脚本自测 —— 一条命令复跑全部套件（9 条断言）。
 
-    机器标记：ASSERTION-COUNT: 8
+    机器标记：ASSERTION-COUNT: 9
 
 .DESCRIPTION
     **仅 Windows**：依赖 powershell 命令与 PowerShell 5.1。
@@ -15,6 +15,7 @@
     覆盖（各套件的条数由**它自己头部**的「ASSERTION-COUNT」声明，本脚本不再另抄一份）：
       sandbox-test.ps1              安装 / 卸载的沙箱实跑
       sandbox-test2.ps1             跨插件保护、不误伤与路径形态
+      install-idempotency-test.ps1  幂等安装判定 —— D-99 的钉子（同版本内容不同 ⇒ 会重装）
       trailing-space-test.mjs       尾随空格路径身份 —— F1 的钉子
       verify-seed.mjs               播种与安装副本的 node 侧校验
       check-readme-consistency.mjs  文档与实现逐字对账（含 F2 / F3 / F6 / V3 / V4 / X1 的钉子）
@@ -50,6 +51,7 @@ Write-Host ''
 $suites = @(
     @{ name = 'sandbox-test.ps1'; kind = 'ps'; desc = '安装/卸载 沙箱实跑' },
     @{ name = 'sandbox-test2.ps1'; kind = 'ps'; desc = '跨插件保护与不误伤' },
+    @{ name = 'install-idempotency-test.ps1'; kind = 'ps'; desc = '幂等安装判定（D-99 钉子）' },
     @{ name = 'trailing-space-test.mjs'; kind = 'node'; desc = '尾随空格路径身份（F1 钉子）' },
     @{ name = 'verify-seed.mjs'; kind = 'node'; desc = '播种与安装副本（node 侧）' },
     @{ name = 'check-readme-consistency.mjs'; kind = 'node'; desc = '文档与实现逐字对账' },

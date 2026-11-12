@@ -836,6 +836,99 @@ const D97_FIXTURE = path.join(REPO, 'tests', 'fixtures', 'd97-hook-compatible.js
     r4.out === '' && r4.code === 0, 'out=' + r4.out.slice(0, 200) + ' err=' + r4.err.slice(0, 200));
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// D-97 独立验收补断言（P2 / P3）：两处「行为可观测、但没有任何断言钉住」的语义缺口
+// ════════════════════════════════════════════════════════════════════════════
+//
+// 本段**不改任何实现**，只把两处语义钉成永久断言（验收方判定实现是对的）。
+//
+// P2 ·「unknown（参数取不出）打断连续段但不计入」在投影计数层不可证伪：
+//      把 loop-gate.mjs 的 `if (verdict !== 'match') break;` 改成
+//      `if (verdict === 'mismatch') break;` ⇒ 全套件仍 64 PASS / 0 FAIL，
+//      而两种实现**判定相反**（仓库版 ALLOW vs 变异体 DENY ⇒ 会误伤）。
+//      ⇒ 断言：前置换一条「参数取不出」的动态条目 ⇒ 末尾连续数**不跨过**它 ⇒ 不拦。
+//
+// P3 · `if (owned === 0 && excluded === 0)` 这个守卫没有任何断言钉住：
+//      去掉 `excluded === 0` 后全套件仍 64 PASS / 0 FAIL。
+//      语义：会话库口径认不出调用**且没有任何调用被归属键排除**时，才启用投影口径；
+//      一旦有调用被归属键排除（说明这份文件混着别的会话的行），就**不得**改用投影口径去数
+//      （那会把别的会话的行算进来 ⇒ 误伤）。
+//      ⇒ 断言：造一个「同时含两种形态」的文件（会话库形态 + 投影形态混在一起），
+//        会话库那半的行归属键与载荷不同 ⇒ 被排除 ⇒ 应放行并留痕，**不得**按投影口径拦。
+{
+  const P2_CMD = 'echo d97-loop-probe';
+  const P2_PAY = { tool: 'bash', args: { command: P2_CMD }, fp: fingerprint('bash', { command: P2_CMD }) };
+
+  // ── P2 · 动态参数条目打断连续段（且不计入）─────────────────────────────
+  {
+    const lines = fs.readFileSync(D97_FIXTURE, 'utf8').split(/\r?\n/).filter((l) => l.trim());
+    // 把**第一条**外层 tool_use 的 code 换成「参数取不出」的动态写法
+    //（变量 / 模板插值 ⇒ 对齐规则取不出 ⇒ unknown）。
+    // 形态仍取自**活体夹具**（只换正文），不新造文件形态。
+    const dyn = [];
+    let swapped = false;
+    for (const l of lines) {
+      const o = JSON.parse(l);
+      const m = o.message || {};
+      const item = (m.content || []).find((x) => x && x.type === 'tool_use');
+      if (item && !swapped) {
+        item.input = { code: 'const r = await tools.bash({ command: cmdVar });', description: 'D-97 P2：动态参数' };
+        swapped = true;
+      }
+      dyn.push(JSON.stringify(o));
+    }
+    const p = writeTranscript('d97-p2-dynamic.jsonl', dyn);
+    const r = gate(payload('bash', { command: P2_CMD }, { transcript_path: p }));
+    ok('D-97 补断言 P2：前置换一条「参数取不出」的动态条目 ⇒ 末尾连续数不跨过它 ⇒ 不拦（unknown 打断但不计入）',
+      r.out === '' && r.code === 0,
+      'out=' + r.out.slice(0, 200) + ' err=' + r.err.slice(0, 160));
+    // 白盒：计数层把这条语义钉死（能定位到是哪一层坏了，不只看得见「拦没拦」）。
+    const entries = [];
+    for (const l of dyn) for (const e of projectionCallsOf(JSON.parse(l))) entries.push(e);
+    const pr = projectionTrailing(entries, P2_PAY);
+    ok('D-97 补断言 P2·白盒：动态条目（unknown）打断连续段且不计入 ⇒ same=4（不是 5）',
+      pr.aligned === true && pr.same === 4 && pr.cur === 5,
+      'aligned=' + pr.aligned + ' same=' + pr.same + ' cur=' + pr.cur + ' 条目=' + entries.length);
+  }
+
+  // ── P3 · excluded===0 守卫：混形态文件不得改用投影口径去数 ──────────────
+  {
+    const lines = fs.readFileSync(D97_FIXTURE, 'utf8').split(/\r?\n/).filter((l) => l.trim());
+    // 会话库形态那半：归属键**与载荷不同** ⇒ 会被归属键排除（excluded>0、owned=0）。
+    // 刻意**不放**任何归属键匹配的行：否则 owned>0，守卫的语义就观测不到。
+    const foreignOuter = JSON.stringify({
+      message_id: 'm-d97-p3-outer',
+      turn_id: OTHER_TURN,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'toolCall', id: 'tc-d97-p3', name: 'run_code',
+          arguments: { code: 'const r = await tools.bash({ command: "echo d97-mixed-other" });' } }]
+      }
+    });
+    const foreignInner = JSON.stringify({
+      message_id: 'm-d97-p3-inner',
+      turn_id: OTHER_TURN,
+      message: {
+        role: 'toolResult',
+        content: [{ type: 'text', text: 'ok' }],
+        details: {
+          ptc: {
+            child_calls: [{ child_tool_call_id: 'cc-d97-p3', parent_tool_call_id: 'pc-d97-p3',
+              tool_name: 'bash', input: { command: 'echo d97-mixed-other' }, status: 'completed' }]
+          }
+        }
+      }
+    });
+    // 投影形态那半：活体夹具原样（6 条逐字相同的外层 tool_use，内层同一条 bash）。
+    const mixed = [foreignOuter, foreignInner].concat(lines);
+    const p = writeTranscript('d97-p3-mixed-shapes.jsonl', mixed);
+    const r = gate(payload('bash', { command: P2_CMD }, { transcript_path: p }));
+    ok('D-97 补断言 P3：混形态文件里有调用被归属键排除时 ⇒ 不得改用投影口径去数 ⇒ 放行并留痕（excluded===0 守卫）',
+      r.out === '' && r.code === 0 && r.err.indexOf('不属于本轮归属键') >= 0,
+      'out=' + r.out.slice(0, 200) + ' err=' + r.err.slice(0, 200));
+  }
+}
+
 // ── 性能读数：大 transcript 上单次 hook 调用的耗时量级 ────────────────
 //
 // D-93（本轮修）：这条断言原是**单次采样**，在并发负载下实测 2921ms ⇒ 触发一条

@@ -8,10 +8,11 @@
       1. 依赖检查（node 必须在 PATH 里）
       2. 源包校验（plugin.json 存在 / name 与安装目录名一致 / hooks.json 引用的每个脚本都存在）
          —— 任一不满足就直接非零退出，**不装一半**
-      3. 幂等安装：
-           目标不存在         -> 直接装
-           目标存在且版本相同 -> 报「已是最新」，不重装
-           目标存在且版本不同 -> 先整份备份到 <Target>\.backup\super-agent-router-<时间戳>\，再装新版
+      3. 幂等安装（判定依据是**内容**，不是版本号 —— D-99）：
+           目标不存在                 -> 直接装
+           目标存在且内容逐文件一致   -> 报「已是最新 —— 不重装」，一个字节都不写
+           目标存在但内容不同         -> 先整份备份到 <Target>\.backup\super-agent-router-<时间戳>\，再装
+           -Force                     -> 跳过幂等判断，强制重装（旧版仍会整份备份）
       4. 装完自校验：文件数 + SHA256 哈希逐个文件与源比对，不一致即报错
       5. 可选播种项目状态层（-Project）：只播种模板，**不复制本项目的成员 / 方法论 / 错题本**
       6. 路径参数（-Target / -Project / 家目录）若含**尾随空白** ⇒ 直接报错退出，
@@ -33,6 +34,10 @@
 
 .PARAMETER VerifyOnly
     只做校验，一个字节都不写：依赖、源包、目标现状都会被检查并打印，然后退出。
+
+.PARAMETER Force
+    强制重装：跳过幂等判断，即使目标内容与源**完全相同**也照装（旧版仍会整份备份）。
+    与 -VerifyOnly 同用时以 **-VerifyOnly** 为准（只校验、一个字节都不写）。
 
 .EXAMPLE
     .\install.ps1
@@ -59,7 +64,8 @@
 param(
     [string]$Target = '',
     [string]$Project = '',
-    [switch]$VerifyOnly
+    [switch]$VerifyOnly,
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -322,13 +328,37 @@ if ($VerifyOnly) {
     exit 0
 }
 
-# ── 6. 幂等判断 ──────────────────────────────────────────────────────
+# ── 6. 幂等判断（按**内容**判定，不按版本号 —— D-99）────────────────
+# D-99：原先这里只比版本号（$installedVersion -eq $srcVersion）⇒ 同一版本内改了代码再跑安装，
+# 它报「已是最新 —— 不重装」且**一个字节都不写** ⇒「改代码 → 重装 → 重启」这条修复路径
+# **静默无效**（输出还是成功口吻，不报错、不留痕）。
+# 现在改成按**内容**判定：目标与源的每个文件 SHA256 都相同才算「已是最新」。
+# 比较逻辑**复用**装完自校验本来就在用的 Get-FileMap / Compare-FileMaps —— 不另造一套。
 $stamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
 $doInstall = $true
-if ($destExists -and $installedVersion -eq $srcVersion) {
-    $doInstall = $false
-    Write-Head '已是最新 —— 不重装'
-    Write-Ok ('目标已是 v' + $installedVersion + '，与源一致，跳过安装（没有备份、没有覆盖）')
+$sameVersionContentDiffers = $false
+if ($Force) {
+    Write-Head '强制重装（-Force）'
+    Write-Note '已指定 -Force ⇒ 跳过幂等判断，直接重新安装（旧版仍会整份备份）'
+} elseif ($destExists) {
+    $destMap = Get-FileMap $DestDir
+    $diffNow = @(Compare-FileMaps $srcMap $destMap)
+    if ($diffNow.Count -eq 0) {
+        $doInstall = $false
+        Write-Head '已是最新 —— 不重装'
+        Write-Ok ('目标已是 v' + $installedVersion + '，与源**内容逐文件一致**，跳过安装（没有备份、没有覆盖）')
+    } else {
+        $sameVersionContentDiffers = ($installedVersion -eq $srcVersion)
+        Write-Head '目标与源不一致 —— 照常重装'
+        if ($sameVersionContentDiffers) {
+            Write-WarnTxt ('**同版本但内容不同**：版本号相同（v' + $srcVersion + '）但内容有 ' + $diffNow.Count + ' 处不同 ' +
+                           '⇒ 不能当「已是最新」—— 同一版本内改了代码再跑安装，必须真的装上去（旧版会先整份备份）')
+        } else {
+            Write-Note ('版本号不同（目标 v' + $installedVersion + ' / 源 v' + $srcVersion + '），内容有 ' + $diffNow.Count +
+                        ' 处不同 ⇒ 照常安装（旧版会先整份备份）')
+        }
+        foreach ($d in $diffNow) { Write-Note ('  ' + $d) }
+    }
 }
 
 # ── 7. 安装 ──────────────────────────────────────────────────────────
@@ -391,6 +421,9 @@ if ($doInstall) {
         Fail ('安装失败：' + $_.Exception.Message)
     }
     Write-Ok ('安装完成：' + $DestDir)
+    if ($sameVersionContentDiffers) {
+        Write-Ok '同版本但内容不同，已重装（旧的那一份在 .backup\ 里，要回退就从那儿取）'
+    }
 
     # 装完再对最终目录做一次哈希比对
     $finalMap = Get-FileMap $DestDir

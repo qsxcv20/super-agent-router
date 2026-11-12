@@ -44,6 +44,20 @@ const MUTANTS = [
     anchor: "  if (ext.dynamic.length) return 'unknown';",
     mutant: "  if (ext.dynamic.length) return 'match';",
     expect: 'D-97 白盒·对齐层：同参 ⇒ match；异参 ⇒ mismatch；动态参数 ⇒ unknown（打断连续段但不计入）'
+  },
+  {
+    id: 'M-D97e',
+    desc: 'unknown 不打断连续段（参数取不出的条目被算进连续数 ⇒ 误伤）',
+    anchor: "    if (verdict !== 'match') break;",
+    mutant: "    if (verdict === 'mismatch') break;",
+    expect: 'D-97 补断言 P2·白盒：动态条目（unknown）打断连续段且不计入 ⇒ same=4（不是 5）'
+  },
+  {
+    id: 'M-D97f',
+    desc: 'excluded===0 守卫失效（有调用被归属键排除时也改用投影口径去数 ⇒ 误伤）',
+    anchor: '    if (owned === 0 && excluded === 0) {',
+    mutant: '    if (owned === 0) {',
+    expect: 'D-97 补断言 P3：混形态文件里有调用被归属键排除时 ⇒ 不得改用投影口径去数 ⇒ 放行并留痕（excluded===0 守卫）'
   }
 ];
 
