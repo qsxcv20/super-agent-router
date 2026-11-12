@@ -711,9 +711,9 @@ S8 的 watchdog 挂在 `SubagentStop`（终点），只在 worker 停下来时�
    glob / grep 取 `pattern` + `path`；其余工具取 arguments 的键排序稳定 JSON。
    **运行形态会改变计数口径（本机 PTC 运行时实测；D-91 已修）**：PTC 模式下 `bash` **不是顶层工具**，
    而是被包在 `run_code` 内部派发；宿主把 plugin PreToolUse 派发在**子调用**上 ⇒ 载荷是
-   **内层**形态（`tool_name='bash'`、`tool_input={command}`），而 transcript 的
+   **内层**形态（`tool_name='bash'`、`tool_input={command}`），而**会话库的** transcript 的
    `message.content[]` 记的是**外层** `run_code`、内层调用记在
-   `message.details.ptc.child_calls[]`（`tool_name` / `input` / `status`）
+   `message.details.ptc.child_calls[]`（`tool_name` / `input` / `status`）——**但 hook 拿到的那个 transcript 不是会话库**（见本条下一段）
    ⇒ 两套序列的指纹永不相等 ⇒ 末尾连续数恒为 0 ⇒ 闸门**恒不触发**（D-91 的根因）。
    ⇒ 现在**按载荷形态择一计数**（`loop-gate.mjs` 的 `pickNamespace()` / `callsFromLines()`）：
    载荷是内层工具 ⇒ 数 `child_calls[]`；载荷是外层 ⇒ 数 `content[]` 的 toolCall。
@@ -721,8 +721,31 @@ S8 的 watchdog 挂在 `SubagentStop`（终点），只在 worker 停下来时�
    ⇒ **诚实边界**：内层记录落盘的参数是**子集**（实测 `bash{command}` / `read{path}` /
    `write{path}` / `edit{file_path}` / `grep{}` / `glob{}`）⇒ 参数没落全的内层记录**不可比**
    （`innerComparable()`）⇒ 打断连续段但**不计入** ⇒ 宁可少拦不误伤。
-   实测后果：PTC 形态下连发 6 次逐字相同的 `bash` **会被拦**；连发 29 次逐字相同的 `grep`
-   **仍放行**（参数没落盘 ⇒ 无法判「是否同一次调用」）。
+   **hook 拿到的 transcript 不是会话库**（D-97 已修）：宿主给 plugin PreToolUse hook 的
+   `transcript_path` = `%TEMP%/minimax-plugin-hooks/transcripts/<sha256(sessionId).slice(0,32)>.compatible.jsonl`
+   —— 一份 **Claude 兼容投影**，**不是**会话的 `messages.jsonl`。投影里**没有** `details.ptc.child_calls[]`
+   （PTC 内层调用在投影中不可见），tool call 是 `type:'tool_use'`+`input`（不是 `type:'toolCall'`+`arguments`）
+   ⇒ 只认会话库形态的解析器在**活体文件上 owned = 0** ⇒ 末尾连续数恒 0 ⇒ 闸门**恒不触发**（D-97 的根因）。
+   ⇒ 现在**按文件形态择一命名空间**（`loop-gate.mjs` 的 `projectionCallsOf()` / `callsFromLines()`），
+   **来源之间也择一**（**投影优先 + 会话库回退**，由 `resolveSessionTranscript()` 按 `session_id` 定位会话库），
+   **两套口径绝不混数**（会话库口径的 5 个锚点 `pickNamespace()` / `innerCallsOf()` / `innerComparable()` /
+   `incomparableFp()` / `callsFromLines()` 在 D-97 修复中**逐字未动**）。
+   ⇒ 投影口径的计数单元是**外层 `run_code` 条目**，必须先把「内层 payload」对齐到「外层条目」：
+   取外层 `code` 里**最后一个**内层调用（`innerTailOf()`，按花括号配平截取、跳过字符串字面量里的括号），
+   再逐键比指纹键集（`tailMatches()`）；工具名不同 ⇒ `mismatch`（打断连续段）；键取不出
+   （变量/表达式/模板插值）⇒ `unknown`（打断连续段但**不计入**）；全部键归一后相等 ⇒ `match`。
+   ⇒ **计数基准**：宿主在执行内层调用**之前**就把外层 `tool_use` 落盘 ⇒ 投影口径把**当前外层条目排除**
+   在计数之外（等价 §1 的「历史末尾连续条数 + 1」）；会话库口径相反（当前内层调用不在文件里）⇒
+   两个来源的「当前调用是否已落盘」语义不同，分别处理。
+   ⇒ **诚实边界（投影口径）**：同一段外层 `code` 里连发 6 次相同内层调用（模型把循环写进 `code`）
+   ⇒ 只数到 1 次外层条目 ⇒ **漏拦**（fail-open 方向，不误伤）；载荷参数在 `code` 里是变量/表达式
+   ⇒ 取不出 ⇒ `unknown` ⇒ 该次**不被拦**（不误伤）。
+
+   实测后果（**会话库口径，D-91 期实测**）：PTC 形态下连发 6 次逐字相同的 `bash` **会被拦**；
+   连发 29 次逐字相同的 `grep` **仍放行**（参数没落盘 ⇒ 无法判「是否同一次调用」）。
+   **投影口径（D-97）**：真实投影字节 + 仓库实现 ⇒ 连续 6 次逐字相同调用 **DENY**（**本地回放**）；
+   4 次以内仍全放行（不误伤）。**客户端活体拦截证据**以装入新副本并重启后的复验为准 ——
+   未取到之前**不许**写成「已生效」。
 3. **只对子代理生效**：载荷里没有 `agent_type`（父会话 / Router）一律放行 —— 与 S2 同一口径。
 4. **本闸门是效率闸门，不是安全闸门：读不到就放行。**
    transcript 读不到 / 解析不出历史 / 载荷异常 ⇒ **放行**并往 stderr 留痕。

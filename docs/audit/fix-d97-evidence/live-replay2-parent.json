@@ -1,0 +1,14 @@
+﻿{
+  "sessionId": "mvs_9bdda202ae274c909a5b4352fc45a471",
+  "sessionFile": "C:\\Users\\yang2\\.minimax\\v2\\sessions\\2026\\11\\09\\09-16-39-837-session_bXZzXzliZGRhMjAyYWUyNzRjOTA5YTViNDM1MmZjNDVhNDcx\\messages.jsonl",
+  "innerTotal": 157,
+  "runs": [
+    {
+      "start": 122,
+      "len": 4,
+      "distinct": false,
+      "sample": "memory|{}"
+    }
+  ],
+  "pickedRun": null
+}

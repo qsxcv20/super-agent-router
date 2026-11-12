@@ -1,0 +1,43 @@
+﻿{
+  "sessionId": "mvs_8a2512c984da4ad19f0cf8c427029996",
+  "sessionFile": "C:\\Users\\yang2\\.minimax\\v2\\sessions\\2026\\11\\12\\07-51-00-122-session_bXZzXzhhMjUxMmM5ODRkYTRhZDE5ZjBjZjhjNDI3MDI5OTk2\\messages.jsonl",
+  "realTurnId": "turn_task_bg_bg_a2a8a6a9-5d5a-41e8-a637-4d32297f095e",
+  "innerTotal": 97,
+  "longestIdenticalInnerRun": 7,
+  "longestRunSample": "edit|{\"file_path\":\"docs/audit/.tmp-d97/block-projection.js\"}",
+  "cut5": {
+    "payload": {
+      "name": "edit",
+      "input": {
+        "file_path": "docs/audit/.tmp-d97/block-projection.js"
+      }
+    },
+    "out": "",
+    "err": "",
+    "code": 0
+  },
+  "cut4": {
+    "out": "",
+    "err": "",
+    "code": 0
+  },
+  "projectionFile": "C:\\Users\\yang2\\AppData\\Local\\Temp\\minimax-plugin-hooks\\transcripts\\7c2582b5f8006451ad99d086e1da0791.compatible.jsonl",
+  "projectionLastTool": "run_code",
+  "projectionLastInnerTail": "bash",
+  "projectionLastInnerCommand": "$ErrorActionPreference='Stop'; node docs/audit/.tmp-d97/live-replay.mjs mvs_8a2512c984da4ad19f0cf8c427029996 2>&1 | Tee-",
+  "projectionDup": {
+    "out": "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"[super-agent-router] [规则 R-LOOP-SAME-CALL] 无进展重复调用闸门：你已经连续第 6 次发起**完全相同**的工具调用（工具=bash，前 5 次的归一化指纹完全一致、中间没有任何别的工具调用）⇒ 这一轮不会再产生新信息。请现在就交付当前结论，或说明卡在哪一步、还缺什么；确实必须再跑同一条命令，请说明为什么前 5 次没有产出新证据。\"}}",
+    "err": "",
+    "code": 0
+  },
+  "projectionReal": {
+    "out": "",
+    "err": "",
+    "code": 0
+  },
+  "projectionMiss": {
+    "out": "",
+    "err": "[super-agent-router] [loop-gate] 放行（兼容投影里定位不到当前调用（内层载荷与外层条目不可比）⇒ 本子会话的重复调用不可见，放行）",
+    "code": 0
+  }
+}

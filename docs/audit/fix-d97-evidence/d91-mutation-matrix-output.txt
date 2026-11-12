@@ -1,0 +1,38 @@
+﻿BASE pass=64 fail=0 exit=0
+--- 6 个语义变异体逐个自检（字节级副本；每个副本独立 node --check；串行）---
+M1 pickNamespace() 恒返回 outer（择一失效）
+   node --check exit=0  套件 pass=60 fail=4 exit=1
+   专属锚点红=是  EXTRA-RED=3  总红数=4  判定=EXTRA-RED(3)
+   RED FAIL D-91 PTC 真实形态：内层载荷在第 6 次被拦（内层序列单独计数，未与外层混数） :: out= err=
+   RED FAIL D-91 收尾 PTC·择一层：按载荷工具名所在的那套序列计数（两边都有⇒内层） :: 两边都有⇒outer 只有内层⇒outer 只有外层⇒outer
+   RED FAIL D-91 收尾 PTC·端到端：真混合形态下内层 bash 连跑 5 次 ⇒ 第 6 次被拦 :: out=
+   RED FAIL D-91 收尾 PTC·防御性：同一行同含外层+内层时仍按载荷形态择一（合成形态，真实中不存在） :: out=
+M2 不可比分支不生效（不可比记录照常计入）
+   node --check exit=0  套件 pass=63 fail=1 exit=1
+   专属锚点红=是  EXTRA-RED=0  总红数=1  判定=恰好红一条
+   RED FAIL D-91 收尾 不可比①：内层参数没落全 ⇒ 不可比 ⇒ 放行（不得凭空造出「重复」） :: out={"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"[super-agent-router] [规则 R
+M4 哨兵改用正常指纹（不可比记录照常计入）
+   node --check exit=0  套件 pass=62 fail=2 exit=1
+   专属锚点红=是  EXTRA-RED=1  总红数=2  判定=EXTRA-RED(1)
+   RED FAIL D-91 收尾 不可比①：内层参数没落全 ⇒ 不可比 ⇒ 放行（不得凭空造出「重复」） :: out={"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"[super-agent-router] [规则 R
+   RED FAIL D-91 收尾 不可比③b：不可比记录的占位指纹是哨兵（与真实指纹不同，不得被当成正常记录计入） :: 哨兵="read|docs/audit/defect-ledger.md||" 真实指纹="read|docs/audit/defect-ledger.md||"
+M6 innerCallsOf() 读 m.ptc（取错层级）
+   node --check exit=0  套件 pass=60 fail=4 exit=1
+   专属锚点红=是  EXTRA-RED=3  总红数=4  判定=EXTRA-RED(3)
+   RED FAIL D-91 PTC 真实形态：内层载荷在第 6 次被拦（内层序列单独计数，未与外层混数） :: out= err=
+   RED FAIL D-91 收尾 PTC·取内层层：从 message.details.ptc.child_calls[] 取到内层记录 :: 取到=0 记录=[]
+   RED FAIL D-91 收尾 PTC·端到端：真混合形态下内层 bash 连跑 5 次 ⇒ 第 6 次被拦 :: out=
+   RED FAIL D-91 收尾 PTC·防御性：同一行同含外层+内层时仍按载荷形态择一（合成形态，真实中不存在） :: out=
+M7 innerComparable() 恒 false（可比性判定失效）
+   node --check exit=0  套件 pass=60 fail=4 exit=1
+   专属锚点红=是  EXTRA-RED=3  总红数=4  判定=EXTRA-RED(3)
+   RED FAIL D-91 PTC 真实形态：内层载荷在第 6 次被拦（内层序列单独计数，未与外层混数） :: out= err=
+   RED FAIL D-91 收尾 PTC·可比性层：参数齐⇒可比、参数缺⇒不可比 :: 参数齐⇒false 参数缺⇒false
+   RED FAIL D-91 收尾 PTC·端到端：真混合形态下内层 bash 连跑 5 次 ⇒ 第 6 次被拦 :: out=
+   RED FAIL D-91 收尾 PTC·防御性：同一行同含外层+内层时仍按载荷形态择一（合成形态，真实中不存在） :: out=
+M8 不可比记录直接丢弃（不打断连续段）
+   node --check exit=0  套件 pass=62 fail=2 exit=1
+   专属锚点红=是  EXTRA-RED=1  总红数=2  判定=EXTRA-RED(1)
+   RED FAIL D-91 收尾 不可比②：不可比记录打断连续段但不计入（末尾连续数不得跨过它累计） :: out={"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"[super-agent-router] [规则 R-L
+   RED FAIL D-91 收尾 不可比③a：不可比记录在计数序列里**占位**（不得被直接丢弃） :: 序列长度=5 内层记录数=6 指纹=["bash|echo d86-live-probe","bash|echo d86-live-probe","bash|echo d86-live-probe","bash|echo d86-live-probe","bash|echo d86
+MUT-CHECK 结束：MISS=0  EXTRA-RED 合计=11

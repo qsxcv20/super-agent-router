@@ -1,0 +1,10 @@
+import fs from 'node:fs';
+let t = fs.readFileSync('docs/audit/.tmp-d97/fixture-profile.json', 'utf8');
+if (t.charCodeAt(0) === 0xFEFF) t = t.slice(1);
+const o = JSON.parse(t);
+console.log('runtime:', JSON.stringify(o.runtime));
+console.log('fixture:', JSON.stringify(o.fixture));
+console.log('donorUseItemKeys:', JSON.stringify(o.donorUseItemKeys), '| fixtureUseItemKeys:', JSON.stringify(o.fixtureUseItemKeys));
+console.log('donorResultItemKeys:', JSON.stringify(o.donorResultItemKeys), '| fixtureResultItemKeys:', JSON.stringify(o.fixtureResultItemKeys));
+console.log('donorTopKeysUse:', JSON.stringify(o.donorTopKeysUse));
+console.log('donorTopKeysResult:', JSON.stringify(o.donorTopKeysResult));

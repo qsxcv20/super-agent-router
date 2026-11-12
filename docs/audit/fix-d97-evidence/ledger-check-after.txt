@@ -1,0 +1,9 @@
+﻿台账：C:\Users\yang2\Documents\MiniMax\mini code的插件\docs\audit\defect-ledger.md
+摘要：{"statsLine":9,"indexRows":102,"detailCount":102,"statusUnion":102,"indexIds":102}
+PASS 台账检查 index-columns
+PASS 台账检查 sets-equal
+PASS 台账检查 severity-distribution
+PASS 台账检查 detail-meta-line
+PASS 台账检查 detail-count
+PASS 台账检查 no-duplicate-d
+>>> 台账自洽

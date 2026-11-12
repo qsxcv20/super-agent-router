@@ -1,0 +1,17 @@
+﻿REPO=.
+ROOT=plugin
+RESULT chain-test exit=0 pass=70 fail=0
+RESULT d27-mut-test exit=0 pass=14 fail=0
+RESULT dispatch-release-test exit=0 pass=58 fail=0
+RESULT e2e-test exit=0 pass=53 fail=0
+RESULT fix-d80-d85-test exit=0 pass=49 fail=0
+RESULT guard-test exit=0 pass=228 fail=0
+RESULT hooks-test exit=0 pass=36 fail=0
+RESULT ledger-test exit=0 pass=23 fail=0
+RESULT lessons-test exit=0 pass=65 fail=0
+RESULT loop-gate-test exit=0 pass=64 fail=0
+RESULT records-test exit=0 pass=52 fail=0
+RESULT roster-test exit=0 pass=38 fail=0
+RESULT scope-amend-test exit=0 pass=119 fail=0
+RESULT scope-test exit=0 pass=38 fail=0
+>>> SHELL ALL PASS

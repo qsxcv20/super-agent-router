@@ -1,0 +1,20 @@
+﻿{
+  "sessionId": "mvs_8a2512c984da4ad19f0cf8c427029996",
+  "sessionFile": "C:\\Users\\yang2\\.minimax\\v2\\sessions\\2026\\11\\12\\07-51-00-122-session_bXZzXzhhMjUxMmM5ODRkYTRhZDE5ZjBjZjhjNDI3MDI5OTk2\\messages.jsonl",
+  "innerTotal": 100,
+  "runs": [
+    {
+      "start": 60,
+      "len": 7,
+      "distinct": false,
+      "sample": "edit|{\"file_path\":\"docs/audit/.tmp-d97/block-projection.js\"}"
+    },
+    {
+      "start": 78,
+      "len": 6,
+      "distinct": false,
+      "sample": "edit|{\"file_path\":\"plugin/scripts/loop-gate.mjs\"}"
+    }
+  ],
+  "pickedRun": null
+}

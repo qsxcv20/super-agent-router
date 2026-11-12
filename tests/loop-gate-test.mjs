@@ -22,7 +22,10 @@ const GATE = path.join(PLUGIN_ROOT, 'scripts', 'loop-gate.mjs');
 // 动态 import（**必须**指向 GATE 而不是固定相对路径）：GATE 跟随 SAR_PLUGIN_ROOT，
 // 变异自检会把插件副本放到别处 ⇒ 静态 import 会绕过副本，测到的是没被改坏的文件。
 const gateMod = await import(pathToFileURL(GATE).href);
-const { fingerprint, innerCallsOf, innerComparable, pickNamespace, callsFromLines, attributionKey, incomparableFp } = gateMod;
+const {
+  fingerprint, innerCallsOf, innerComparable, pickNamespace, callsFromLines, attributionKey, incomparableFp,
+  projectionCallsOf, innerTailOf, argValuesOf, tailMatches, projectionTrailing
+} = gateMod;
 
 let fail = 0;
 const ok = (l, c, e = '') => { if (!c) fail++; console.log((c ? 'PASS ' : 'FAIL ') + l + (e ? ' :: ' + e : '')); };
@@ -736,6 +739,103 @@ function ptcLongestRun(items, keyFn) {
       r.out.includes('deny') && r.out.includes('第 7 次'), 'out=' + r.out.slice(0, 220));
   }
 }
+// ════════════════════════════════════════════════════════════════════════════
+// D-97：宿主喂给 plugin hook 的 transcript 是**兼容投影**，不是会话库 messages.jsonl
+// ════════════════════════════════════════════════════════════════════════════
+//
+// 事实（D-97 复核实测，见 docs/audit/.tmp-d97/ 报告）：
+//   · 宿主把 plugin PreToolUse 的 transcript_path 指到
+//     %TEMP%\minimax-plugin-hooks\transcripts\<sha256(sessionId).slice(0,32)>.compatible.jsonl
+//     （Claude 兼容投影）—— **不是**会话库的 messages.jsonl；
+//   · 投影里**没有** message.details.ptc.child_calls[]（PTC 内层调用在投影中不可见）；
+//   · 投影里的 tool call 是 Claude 形态 {type:'tool_use', input:{...}}（不是 type:'toolCall'）。
+// ⇒ D-91 的解析器在投影上认不出任何调用 ⇒ 末尾连续数恒为 0 ⇒ 闸门在真实运行时一次都没触发。
+//
+// 本节夹具 = **运行时真正被读的那份文件**的同构最小片段（结构逐字取样、内容脱敏，
+//   生成器：docs/audit/.tmp-d97/make-d97-fixture.mjs）。
+// 语义（与运行时同序）：宿主先落**外层** tool_use，再执行**内层**调用 ⇒
+//   夹具最后一条 tool_use 就是「当前正在执行」的那次外层调用（它的结果还没落盘）。
+const D97_FIXTURE = path.join(REPO, 'tests', 'fixtures', 'd97-hook-compatible.jsonl');
+{
+  const lines = fs.readFileSync(D97_FIXTURE, 'utf8').split(/\r?\n/).filter((l) => l.trim());
+  let childArrays = 0, toolUse = 0, toolCall = 0;
+  const useIdx = [];
+  lines.forEach((l, i) => {
+    const o = JSON.parse(l);
+    const m = o.message || {};
+    const cc = m.details && m.details.ptc && m.details.ptc.child_calls;
+    if (Array.isArray(cc)) childArrays += 1;
+    for (const it of (m.content || [])) {
+      if (it && it.type === 'tool_use') { toolUse += 1; useIdx.push(i); }
+      if (it && it.type === 'toolCall') toolCall += 1;
+    }
+  });
+  ok('D-97 活体夹具形状：与宿主 plugin hook 兼容投影同源（无 child_calls 数组、tool call 是 tool_use+input）',
+    childArrays === 0 && toolUse > 0 && toolCall === 0,
+    'child_calls数组=' + childArrays + ' tool_use=' + toolUse + ' toolCall=' + toolCall);
+
+  const CMD = 'echo d97-loop-probe';
+  const curObj = JSON.parse(lines[useIdx[useIdx.length - 1]]);
+  const curUse = curObj.message.content.find((x) => x && x.type === 'tool_use');
+  ok('D-97 活体夹具：最后一条外层调用 = 当前正在执行的那次（与运行时同序：先落 tool_use 再执行内层）',
+    !!curUse && curUse.name === 'run_code' && String(curUse.input.code).indexOf(CMD) >= 0,
+    'name=' + (curUse && curUse.name) + ' code=' + String(curUse && curUse.input.code).slice(0, 80));
+
+  // 载荷 = **内层** bash（宿主把 plugin PreToolUse 派在子调用上 ⇒ 载荷是内层形态）。
+  const r = gate(payload('bash', { command: CMD }, { transcript_path: D97_FIXTURE }));
+  ok('D-97 活体形态：兼容投影上连续 5 次相同调用 ⇒ 第 6 次被拦（这条在修复前是红的）',
+    r.out.includes('deny') && r.out.includes('R-LOOP-SAME-CALL') && r.out.includes('第 6 次'),
+    'out=' + r.out.slice(0, 240) + ' err=' + r.err.slice(0, 200));
+
+  // ── D-97 白盒：把四层语义各自钉住（红点能定位到层，不只看得见「拦没拦」）──
+  {
+    const curUseObj = JSON.parse(lines[useIdx[useIdx.length - 1]]);
+    const entries = projectionCallsOf(curUseObj);
+    ok('D-97 白盒·取投影层：从 Claude 形态（type=tool_use + input）取出外层条目',
+      entries.length === 1 && entries[0].name === 'run_code' &&
+      String(entries[0].code).indexOf(CMD) >= 0,
+      '条目=' + entries.length + ' name=' + (entries[0] && entries[0].name));
+
+    const tail = innerTailOf(entries[0].code);
+    ok('D-97 白盒·取内层尾层：外层 code 里最后一个内层调用 = bash{command}',
+      !!tail && tail.tool === 'bash' &&
+      String(argValuesOf(tail.argsText, ['command']).values.command || '').indexOf(CMD) >= 0,
+      'tail=' + JSON.stringify(tail && { tool: tail.tool, argsText: tail.argsText.slice(0, 80) }));
+
+    const pay = { tool: 'bash', args: { command: CMD }, fp: fingerprint('bash', { command: CMD }) };
+    ok('D-97 白盒·对齐层：同参 ⇒ match；异参 ⇒ mismatch；动态参数 ⇒ unknown（打断连续段但不计入）',
+      tailMatches(tail, pay) === 'match' &&
+      tailMatches(tail, { tool: 'bash', args: { command: 'echo other' }, fp: 'x' }) === 'mismatch' &&
+      tailMatches(innerTailOf('await tools.bash({ command: cmdVar });'), pay) === 'unknown',
+      '同参=' + tailMatches(tail, pay) +
+      ' 异参=' + tailMatches(tail, { tool: 'bash', args: { command: 'echo other' }, fp: 'x' }) +
+      ' 动态=' + tailMatches(innerTailOf('await tools.bash({ command: cmdVar });'), pay));
+
+    const all = [];
+    for (const l of lines) {
+      const o = JSON.parse(l);
+      for (const e of projectionCallsOf(o)) all.push(e);
+    }
+    const pr = projectionTrailing(all, pay);
+    ok('D-97 白盒·计数层：6 条外层条目里末尾连续相同数 = 5（当前那条不计），且定位到了当前调用',
+      pr.aligned === true && pr.same === 5 && pr.cur === 5,
+      'aligned=' + pr.aligned + ' same=' + pr.same + ' cur=' + pr.cur + ' 条目=' + all.length);
+
+    const miss = projectionTrailing(all, { tool: 'bash', args: { command: 'echo never-seen' }, fp: 'x' });
+    ok('D-97 白盒·计数层：定位不到当前调用 ⇒ aligned=false（不静默放行，由主流程留痕）',
+      miss.aligned === false && miss.same === 0,
+      'aligned=' + miss.aligned + ' same=' + miss.same);
+  }
+
+  // 误伤控制：切掉「当前」那条 ⇒ 只剩 4 次相同 ⇒ 不到阈值 ⇒ 不拦。
+  // （投影里「当前正在执行的外层调用」也已落盘 ⇒ 要切掉**最后一条** tool_use，
+  //   留下的 5 条里第 5 条即当前调用 ⇒ 前面 4 次相同 ⇒ 不到阈值。）
+  const cut4 = writeTranscript('d97-cut4.jsonl', lines.slice(0, useIdx[useIdx.length - 2] + 1));
+  const r4 = gate(payload('bash', { command: CMD }, { transcript_path: cut4 }));
+  ok('D-97 活体形态：连跑 4 次不拦（阈值边界不误伤）',
+    r4.out === '' && r4.code === 0, 'out=' + r4.out.slice(0, 200) + ' err=' + r4.err.slice(0, 200));
+}
+
 // ── 性能读数：大 transcript 上单次 hook 调用的耗时量级 ────────────────
 //
 // D-93（本轮修）：这条断言原是**单次采样**，在并发负载下实测 2921ms ⇒ 触发一条

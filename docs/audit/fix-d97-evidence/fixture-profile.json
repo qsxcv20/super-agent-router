@@ -1,0 +1,104 @@
+﻿{
+  "runtimeFile": "C:\\Users\\yang2\\AppData\\Local\\Temp\\minimax-plugin-hooks\\transcripts\\7c2582b5f8006451ad99d086e1da0791.compatible.jsonl",
+  "sessionId": "mvs_8a2512c984da4ad19f0cf8c427029996",
+  "sha256_32": "7c2582b5f8006451ad99d086e1da0791",
+  "fixtureFile": "C:\\Users\\yang2\\Documents\\MiniMax\\mini code的插件\\tests\\fixtures\\d97-hook-compatible.jsonl",
+  "runtime": {
+    "file": "7c2582b5f8006451ad99d086e1da0791.compatible.jsonl",
+    "bytes": 1117521,
+    "lines": 169,
+    "textMentionChildCalls": 45,
+    "realChildCallArrays": 0,
+    "contentToolUse": 84,
+    "contentToolCall": 0,
+    "contentToolResult": 83,
+    "contentText": 118,
+    "topKeys": {
+      "uuid": 169,
+      "parentUuid": 169,
+      "sessionId": 169,
+      "timestamp": 169,
+      "type": 169,
+      "message": 169,
+      "toolUseResult": 83
+    }
+  },
+  "fixture": {
+    "file": "d97-hook-compatible.jsonl",
+    "bytes": 4861,
+    "lines": 11,
+    "textMentionChildCalls": 0,
+    "realChildCallArrays": 0,
+    "contentToolUse": 6,
+    "contentToolCall": 0,
+    "contentToolResult": 5,
+    "contentText": 0,
+    "topKeys": {
+      "uuid": 11,
+      "parentUuid": 11,
+      "sessionId": 11,
+      "timestamp": 11,
+      "type": 11,
+      "message": 11,
+      "toolUseResult": 5
+    }
+  },
+  "donorTopKeysUse": [
+    "uuid",
+    "parentUuid",
+    "sessionId",
+    "timestamp",
+    "type",
+    "message"
+  ],
+  "donorTopKeysResult": [
+    "uuid",
+    "parentUuid",
+    "sessionId",
+    "timestamp",
+    "type",
+    "message",
+    "toolUseResult"
+  ],
+  "donorUseItemKeys": [
+    "type",
+    "id",
+    "name",
+    "input"
+  ],
+  "donorResultItemKeys": [
+    "type",
+    "tool_use_id",
+    "content",
+    "is_error"
+  ],
+  "fixtureTopKeysUse": [
+    "uuid",
+    "parentUuid",
+    "sessionId",
+    "timestamp",
+    "type",
+    "message"
+  ],
+  "fixtureTopKeysResult": [
+    "uuid",
+    "parentUuid",
+    "sessionId",
+    "timestamp",
+    "type",
+    "message",
+    "toolUseResult"
+  ],
+  "fixtureUseItemKeys": [
+    "type",
+    "id",
+    "name",
+    "input"
+  ],
+  "fixtureResultItemKeys": [
+    "type",
+    "tool_use_id",
+    "content",
+    "is_error"
+  ]
+}
