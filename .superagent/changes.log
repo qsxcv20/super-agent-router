@@ -37,3 +37,4 @@
 2026-11-12T00:20:41.557Z | scope |  | deny req_mwcsfapd_lfuj0b | by mvs_9bdda202ae274c909a5b4352fc45a471 | 活体探针的故意越界阳性对照（非真实需求）
 2026-11-12T00:20:43.989Z | scope |  | deny req_mwcsfkdr_3dc88d | by mvs_9bdda202ae274c909a5b4352fc45a471 | 活体探针的只读诊断：读活体缓存树目录（非真实需求）
 2026-11-12T00:20:47.769Z | scope |  | deny req_mwcsksj3_u4chcg | by mvs_9bdda202ae274c909a5b4352fc45a471 | 活体探针的只读诊断：读本会话 transcript 目录（非真实需求）
+2026-11-12T10:19:01.141Z | scope | dsp_mwde59aq_da685p | deny req_mwde7fpn_h0daow | by mvs_9bdda202ae274c909a5b4352fc45a471 | 
