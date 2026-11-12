@@ -151,5 +151,55 @@ ok('普通提问仍静默放行（无可用专项成员的工作区）', (g.stdo
   ok('D-38 账号成员名单不可用时必须披露', o3.includes('账号成员名单不可用'), o3.slice(0, 300));
 }
 
+// ── D-86：无进展重复调用闸门（loop-gate）的 hook 注册 ─────────────────────
+//
+// 为什么要在 hooks-test 里钉住三件事：
+//   1. 注册**必须在 PreToolUse 数组末尾** —— 上面那些 matcher 定位用的是
+//      groups.find(...)（取**第一个**匹配项），插在前面会改掉它们命中的是哪个 group，
+//      把既有断言的语义改掉却看不出错；
+//   2. matcher 必须覆盖各通道工具（read/glob/grep/list/search/write/edit/bash/run_code…）——
+//      漏一个通道 = 那个通道的循环没人拦；
+//   3. command 与 commandWindows 两种写法都要有（Windows 上只有后者会被执行）。
+{
+  const groups = h.PreToolUse || [];
+  const last = groups[groups.length - 1] || {};
+  const lh = (last.hooks || [])[0] || {};
+  ok('D-86 loop-gate handler 注册在 PreToolUse 数组末尾',
+    /loop-gate/.test(String(lh.command || '')) && /loop-gate/.test(String(lh.commandWindows || '')),
+    'last=' + JSON.stringify(last.matcher || ''));
+  ok('D-86 loop-gate matcher 覆盖读/写/检索/复合各通道',
+    /read/.test(last.matcher || '') && /glob/.test(last.matcher || '') &&
+    /grep/.test(last.matcher || '') && /list/.test(last.matcher || '') &&
+    /search/.test(last.matcher || '') && /write/.test(last.matcher || '') &&
+    /edit/.test(last.matcher || '') && /bash/.test(last.matcher || '') &&
+    /run_code/.test(last.matcher || ''), last.matcher || '');
+  // F2：宿主 hook 派发器的 matcher 是**精确等值**（父会话已从宿主源码确证）：
+  //   alternatives = pattern.split(/[|,]/).map(trim);
+  //   若每段都只含 [A-Za-z0-9_.:/-] ⇒ 走 values.some(v => alternatives.includes(v))（精确等值）
+  //   而 matcherValues() 只返回**单个工具名** ⇒ 「task」不会顺带命中「task_output」。
+  //   漏掉 task_output 的代价：真实数据里最长的连跑族恰恰是 task_output 轮询
+  //   （实测 430 个真实 transcript：run=14 的 run_code、run=10 的 task_output）⇒
+  //   漏了就等于漏掉最该拦的那一族。这三条断言各自可证伪：删掉任一个工具名即转红。
+  const splitMatcher = (m) => String(m || '').split(/[|,]/).map((s) => s.trim()).filter(Boolean);
+  const lm = splitMatcher(last.matcher);
+  ok('D-86 F2 loop-gate matcher 精确包含 task_output（宿主 matcher 是精确等值，漏了就拦不到轮询族）',
+    lm.includes('task_output'), 'matcher=' + (last.matcher || ''));
+  ok('D-86 F2 loop-gate matcher 精确包含 task_query',
+    lm.includes('task_query'), 'matcher=' + (last.matcher || ''));
+  ok('D-86 F2 loop-gate matcher 精确包含 task_stop',
+    lm.includes('task_stop'), 'matcher=' + (last.matcher || ''));
+  ok('D-86 loop-gate handler 有 command 与 commandWindows 两种写法且都指向 loop-gate.mjs',
+    typeof lh.command === 'string' && /loop-gate\.mjs/.test(lh.command) &&
+    typeof lh.commandWindows === 'string' && /loop-gate\.mjs/.test(lh.commandWindows),
+    'command=' + String(lh.command || '') + ' win=' + String(lh.commandWindows || ''));
+  ok('D-86 既有 PreToolUse group 的相对顺序未变',
+    groups.length >= 5 &&
+    groups[0].matcher === 'task' &&
+    /write\|edit/.test(groups[1].matcher || '') &&
+    /read\|glob/.test(groups[2].matcher || '') &&
+    /mavis_agent_delete/.test(groups[3].matcher || ''),
+    groups.map((g) => g.matcher).join(' || '));
+}
+
 console.log(fail === 0 ? '>>> HOOKS ALL PASS' : '>>> HOOKS FAILURES: ' + fail);
 process.exit(fail ? 1 : 0);

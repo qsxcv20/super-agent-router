@@ -36,6 +36,7 @@ function block(rule, reason) {
 // 三条回收路径：
 //   1. 正常结束（SubagentStop + 交付通过校验）→ 立即回收
 //   2. 超时兜底：超过 TTL 的 active 记录判死
+//      （只判**台账记录** —— 不终止子代理，见契约 S6.2 第 2 条）
 //   3. 读时自愈：读取在飞名单时把已超龄的 active 记录判死并落盘
 // 以前只有第 1 条 —— 派工被取消 / 中断 / 子会话异常退出时，名额两小时内不回收（D-10）。
 function dispatchMatchesAgent(d, key) {

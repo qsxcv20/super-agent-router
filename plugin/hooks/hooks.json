@@ -68,6 +68,17 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "read|glob|grep|list|search|write|edit|multiedit|notebookedit|bash|run_code|mavis|task|task_output|task_query|task_stop",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/scripts/loop-gate.mjs\"",
+            "commandWindows": "node \"${PLUGIN_ROOT}\\scripts\\loop-gate.mjs\"",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SubagentStop": [

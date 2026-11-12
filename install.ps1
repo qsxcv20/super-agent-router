@@ -19,6 +19,9 @@
       7. 路径参数若含 Windows 路径非法字符（" < > | * ? 与控制字符）⇒ 同样直接报错退出，
          并点名最可能的原因：命令行里末尾的反斜杠被闭引号吃掉了
          （-Target "D:\My Plugins\" 实际会被解析成 D:\My Plugins"）
+      8. 收尾提示写明**「重启 MiniMax Code 客户端后生效」**：宿主把 Hook 绑定在插件注册时
+         解析出来的那棵内容哈希缓存树上，覆盖磁盘上的插件文件只会多出一棵新树，
+         运行中的客户端仍绑定旧树 ⇒ **不会自动生效**
 
 .PARAMETER Target
     插件安装根目录。默认 $env:USERPROFILE\.minimax\plugins。
@@ -45,6 +48,12 @@
 
 .NOTES
     装完必须**新开一个会话**：插件的 Hook 按会话激活，旧会话不会重新注入。
+    升级 / 重装后还必须**重启 MiniMax Code 客户端**：宿主把 Hook 绑定在插件注册时
+    解析出来的那棵内容哈希缓存树上，覆盖磁盘上的插件文件不会让运行中的客户端换版本
+    ⇒ 新代码不会自动生效。
+    自证当前生效的是哪一版：让子代理做一次必然越界的操作，从拦截原文的「批准命令」那一段
+    取出 plugin-hook-cache\sha256-tree-v1-<64位哈希>\ 那串哈希，再读那棵树的
+    .minimax-plugin\plugin.json —— 里面的 version 字段就是当前真正在跑的那一版。
 #>
 [CmdletBinding()]
 param(
@@ -494,6 +503,15 @@ if (-not [string]::IsNullOrEmpty($Project)) {
 # ── 9. 收尾提示 ──────────────────────────────────────────────────────
 Write-Head '接下来'
 Write-WarnTxt 'Hook 按会话激活，必须新开一个会话才会生效。'
+Write-WarnTxt '【必须重启 MiniMax Code 客户端才会生效】—— 不会自动生效。'
+Write-Host ''
+Write-Host '  为什么必须重启（不是建议，是确定行为）：' -ForegroundColor Gray
+Write-Host '    宿主在「插件注册时」按插件包的内容哈希物化出一棵缓存树，' -ForegroundColor Gray
+Write-Host '    并把 Hook 绑在那棵树上（C:\Users\<你>\.minimax\v2\plugin-hook-cache\sha256-tree-v1-<64位哈希>\）。' -ForegroundColor Gray
+Write-Host '    覆盖磁盘上的插件文件（重新安装）只会多物化出一棵新树，' -ForegroundColor Gray
+Write-Host '    运行中的客户端仍然绑定旧树 —— 宿主还把解析后的 Hook 配置缓存在内存里。' -ForegroundColor Gray
+Write-Host '    ⇒ 不重启客户端，运行中的客户端不会用上你刚装的这一份。' -ForegroundColor Gray
+Write-Host '      （升级场景的症状最明显：新版本的新规则整条不生效。）' -ForegroundColor Gray
 Write-Host ''
 Write-Host '  1) 新开一个会话，在里面提一句编排型请求，例如：' -ForegroundColor Gray
 Write-Host '       这个需求拆成两个任务并行做，谁来负责？' -ForegroundColor Gray
@@ -502,7 +520,14 @@ Write-Host ''
 Write-Host '  2) 想先手工确认脚本能跑（可选）：' -ForegroundColor Gray
 Write-Host ('       node "' + (Join-Path $DestDir 'scripts\session-start.mjs') + '"') -ForegroundColor Gray
 Write-Host ''
-Write-Host '  3) 卸载：' -ForegroundColor Gray
+Write-Host '  3) 想确认「当前跑的是哪一版」（不重启客户端也能查）：' -ForegroundColor Gray
+Write-Host '       让一个子代理做一次必然越界的操作，拦截原文里「批准命令」那一段' -ForegroundColor Gray
+Write-Host '       会带出运行中那棵树的路径 plugin-hook-cache\sha256-tree-v1-<64位哈希>\... 。' -ForegroundColor Gray
+Write-Host '       再读那棵树自己的清单 .minimax-plugin\plugin.json —— 里面的 version 字段' -ForegroundColor Gray
+Write-Host '       就是当前真正在跑的那一版（路径由运行中的 Hook 从自己所在位置反推得出）：' -ForegroundColor Gray
+Write-Host ('       读到的 version = ' + $srcVersion + ' ⇒ 跑的就是这一版；不是这个号 ⇒ 还在跑旧树 ⇒ 重启客户端。') -ForegroundColor Gray
+Write-Host ''
+Write-Host '  4) 卸载：' -ForegroundColor Gray
 Write-Host '       .\uninstall.ps1            # 移到 .trash\，可恢复' -ForegroundColor Gray
 Write-Host '       .\uninstall.ps1 -Purge     # 彻底删除' -ForegroundColor Gray
 Write-Host ''

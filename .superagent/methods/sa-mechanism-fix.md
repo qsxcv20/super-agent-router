@@ -80,3 +80,9 @@ transcript 里的 brief 解析、派工台账的生命周期。产出的改动�
 - 验收：verifier
 - 写入者：parent:mvs_9bdda202ae274c909a5b4352fc45a471 · 会话 mvs_9bdda202ae274c909a5b4352fc45a471 · 2026-11-10T22:07:02.344Z
 
+### 2026-11-11 · 编排机制边界判定改造：工具通道语义与判定闸门 · D-86 无进展重复调用闸门（loop-gate）：子代理陷入重复查证时当场拦下
+- 做法：判据只取行为不取思维内容：连续相同调用指纹（bash/run_code 取命令正文、read 取 path 并连 offset·limit、glob/grep 取 pattern+path）达 N 次即拦第 N+1 次；归属键用 turn_id 归一（真实 transcript 行无 sessionId，用它过滤是死代码）；只读尾部并按 x4 自适应扩读（请求行与结果行交替，固定窗口会静默少算）；效率闸门 fail-open，guard 仍独立 fail-closed。
+- 证据：plugin/scripts/loop-gate.mjs + tests/loop-gate-test.mjs（37 条断言，10 个变异体全红）；独立复验 PASS：430+ 真实 transcript 复现阳性（最长连跑 14 次 run_code / 10 次 task_output）+ 3 个金丝雀 + 60 份抽样误拦 0
+- 验收：verifier
+- 写入者：parent:mvs_9bdda202ae274c909a5b4352fc45a471 · 会话 mvs_9bdda202ae274c909a5b4352fc45a471 · 2026-11-11T18:25:56.984Z
+

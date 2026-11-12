@@ -32,3 +32,8 @@
 2026-11-10T12:58:25.491Z | tier | sa-gate-integrity | scoped -> full | by mvs_9bdda202ae274c909a5b4352fc45a471
 2026-11-10T15:23:16.717Z | scope | dsp_mwarh6z0_fc0rb5 | deny req_mwasyzrh_v934wl | by mvs_9bdda202ae274c909a5b4352fc45a471 | parent-owned
 2026-11-10T15:23:17.327Z | scope | dsp_mwarh6z0_fc0rb5 | deny req_mwat166l_eysrrl | by mvs_9bdda202ae274c909a5b4352fc45a471 | parent-owned
+2026-11-11T19:04:34.329Z | scope | dsp_mwch8u4d_388xrs | deny req_mwch9sla_mc4x8m | by mvs_9bdda202ae274c909a5b4352fc45a471 | 活体探针产物（越界路径阳性对照），非真实扩权请求
+2026-11-11T19:04:35.620Z | scope | dsp_mwchgokk_se5lhz | deny req_mwchhj5p_bipaas | by mvs_9bdda202ae274c909a5b4352fc45a471 | 活体探针产物（越界路径阳性对照），非真实扩权请求
+2026-11-12T00:20:41.557Z | scope |  | deny req_mwcsfapd_lfuj0b | by mvs_9bdda202ae274c909a5b4352fc45a471 | 活体探针的故意越界阳性对照（非真实需求）
+2026-11-12T00:20:43.989Z | scope |  | deny req_mwcsfkdr_3dc88d | by mvs_9bdda202ae274c909a5b4352fc45a471 | 活体探针的只读诊断：读活体缓存树目录（非真实需求）
+2026-11-12T00:20:47.769Z | scope |  | deny req_mwcsksj3_u4chcg | by mvs_9bdda202ae274c909a5b4352fc45a471 | 活体探针的只读诊断：读本会话 transcript 目录（非真实需求）
