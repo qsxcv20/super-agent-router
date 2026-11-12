@@ -405,8 +405,10 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Purge -PurgeData
 ├── tools/                       # 工装
 │   ├── run-tests.mjs             # 验收工装（自动发现 tests/*-test.mjs）
 │   ├── deploy-plugin.mjs         # 部署到安装目录
+
 │   ├── sync-github.mjs           # 同步到 GitHub
 │   ├── verify-github.mjs         # 逐文件核对远端内容
+│   ├── release-github.mjs        # 打 tag + 发 GitHub Release + 传 zip 资产
 │   └── install-selftest/         # 安装/卸载脚本自测（仅 Windows）
 │
 ├── docs/audit/                  # 独立验收与专项审计报告

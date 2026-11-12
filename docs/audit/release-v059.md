@@ -215,6 +215,37 @@ SANDBOX=%TEMP%\sar-v059-74d5f112
 | `run-all.ps1` | **6 套件 / 294 条 + 8 条对账全绿**，exit=0 |
 | `check-readme-consistency.mjs` | **PASS 131 / FAIL 0**，exit=0 |
 
+
 > **一次「不是自己写的东西要自己跑」的实例**：父会话的这次全量回归是在
 > **三份全量回归并发 + 16 个忙循环**的满载下跑完的（另两份分别是复审方的与返修单的）——
 > 性能断言**照样绿**，这正是 D-93 修法要解决的场景。
+
+## 7. 发布流程（可复跑，父会话补记）
+
+v0.5.9 的发布**全程走 GitHub Data API 通道**，**没有用过 `git push`** —— 本地历史与远端历史
+是两条分叉的链（`git merge-base HEAD origin/main` 为空），push 会毁掉已发布的历史。
+
+| 步 | 命令 | 作用 | 本次实测 |
+|---|---|---|---|
+| 1 | `git add -A && git commit -F <msg>` | **必须先提交** —— `sync-github.mjs` 从 **HEAD 的 blob** 取内容（不是工作区文件），未提交的新文件**不会**进包 | 33 个文件 / 3800 行新增，HEAD=`9fd34ba` |
+| 2 | `node tools/sync-github.mjs` | 建 blob → tree → commit → 更新 `main` 引用 | 143 个文件，远端 commit `e1697168` |
+| 3 | `node tools/verify-github.mjs` | **逐文件比对 blob sha**（不只比文件名） | **143 / 143 一致**，exit=0 |
+| 4 | `git archive --format=zip --prefix=super-agent-router-v0.5.9/ HEAD -o <zip>` | 打资产 zip（内容 = 该 commit 的 tree） | 1,555,574 B |
+| 5 | `node tools/release-github.mjs --version v0.5.9 --body <md> --zip <zip>` | 建 tag（轻量，objType=commit）→ 建 Release → 上传 zip 资产 → 自检 | Release id `442511532`，`draft=false`，1 个资产 |
+| 6 | 同上加 `--dry-run` | **发布前必跑**：只读远端，确认 tag / release 尚不存在，并打印将要执行的动作 | dry-run 输出 `tag已存在=false / release已存在=false` |
+
+**两个必须记住的坑**：
+
+1. **资产 zip 用本地 HEAD 打，但远端 tag 指向远端 commit** —— 两者**内容完全一致**：
+   本次实测远端 commit 的 tree = `54362296…` = 本地 `HEAD^{tree}` ⇒ **逐字节同树**。
+   （本地 `git fetch` 走不通：github.com:443 直连不通，只有 api.github.com 通。）
+2. **资产 zip 要用 `git archive` 打，不要用工作区目录打包** —— 前者严格等于该 commit 的 tree，
+   后者会把未提交改动、临时文件一并打进去。
+
+**本次发布实测结果**：tag `refs/tags/v0.5.9` → `e1697168`（轻量、objType=commit、与 main 一致）；
+Release id `442511532`，`draft=false`、`prerelease=false`、正文 2542 字符、1 个资产
+（`super-agent-router-v0.5.9.zip`，1,555,574 B）。
+
+> **这次发布流程是第一次被完整跑通并脚本化**：此前 v0.5.7 的 tag / Release 是手工用 API 建的，
+> 仓库里**没有留下任何脚本** ⇒ 流程只存在于当时的会话里。本单把三步（tag / release / 资产）
+> 固化成 `tools/release-github.mjs`，任何人可复跑。
